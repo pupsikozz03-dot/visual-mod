@@ -3,14 +3,25 @@ package com.visuals.client;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.lwjgl.glfw.GLFW;
 
 import java.lang.reflect.Constructor;
@@ -20,15 +31,10 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Главный клиентский класс мода Visuals для Minecraft 1.21.x Fabric.
- * Полностью совместим с 1.21.0 - 1.21.11+.
- */
 public class VisualModClient implements ClientModInitializer {
     public static final String MOD_ID = "visuals_mod";
     public static VisualModClient INSTANCE;
 
-    // Кэш рефлексии для безопасной отрисовки текста на 1.21.0 - 1.21.11+
     private static Method cachedDrawTextString = null;
     private static Method cachedDrawTextText = null;
     private static boolean textRendererInitialized = false;
@@ -41,29 +47,19 @@ public class VisualModClient implements ClientModInitializer {
     public void onInitializeClient() {
         INSTANCE = this;
 
-        // Безопасное создание KeyBinding с поддержкой 1.21.11 (KeyBinding.Category) и более ранних 1.21.x
-        clickGuiKey = createKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT);
-        if (clickGuiKey != null) {
-            try {
-                KeyBindingHelper.registerKeyBinding(clickGuiKey);
-            } catch (Throwable ignored) {
-                // Если Fabric API отклонит бинд, будет работать прямой GLFW-перехват ниже
-            }
-        }
+        // Конструктор на 3 аргумента (String, int, String) для надежной совместимости
+        clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
 
-        // Инициализация модулей
         moduleManager.init();
 
-        // Подписка на клиентские тики для открытия GUI и логики
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             boolean openRequested = false;
 
-            // 1. Проверка через KeyBinding (если успешно зарегистрирован)
             if (clickGuiKey != null && clickGuiKey.wasPressed()) {
                 openRequested = true;
             }
 
-            // 2. Прямой опрос GLFW Insert на случай несовместимости KeyBinding на 1.21.11
+            // Прямой опрос GLFW на случай кастомных версий Fabric/драйверов
             if (client.getWindow() != null && client.getWindow().getHandle() != 0) {
                 long handle = client.getWindow().getHandle();
                 boolean isDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
@@ -74,57 +70,56 @@ public class VisualModClient implements ClientModInitializer {
             }
 
             if (openRequested && client.currentScreen == null) {
-                client.setScreen(new ClickGuiScreen(moduleManager));
+                client.setScreen(new ModernDeltaClickGui(moduleManager));
             }
 
             if (client.world != null && client.player != null) {
                 moduleManager.onTick(client);
             }
         });
+
+        // Хук рендера NameTags в мировом пространстве
+        WorldRenderEvents.AFTER_ENTITIES.register(context -> {
+            NameTagsModule nameTags = moduleManager.getModule(NameTagsModule.class);
+            if (nameTags != null && nameTags.isEnabled()) {
+                nameTags.renderInWorld(context);
+            }
+        });
     }
 
-    /**
-     * Создает KeyBinding с учетом изменений сигнатуры конструктора в Minecraft 1.21.9 - 1.21.11
-     */
-    private KeyBinding createKeyBindingSafely(String translationKey, int defaultKey) {
+    private KeyBinding registerKeyBindingSafely(String translationKey, int defaultKey, String category) {
         try {
-            for (Constructor<?> ctor : KeyBinding.class.getConstructors()) {
-                Class<?>[] params = ctor.getParameterTypes();
-                
-                // Конструктор вида (String, int, Category/String)
-                if (params.length == 3 && params[0] == String.class && params[1] == int.class) {
-                    if (params[2] == String.class) {
-                        return (KeyBinding) ctor.newInstance(translationKey, defaultKey, "category.visuals");
-                    } else {
-                        Object category = resolveCategoryInstance(params[2]);
-                        return (KeyBinding) ctor.newInstance(translationKey, defaultKey, category);
+            // Прямой вызов конструктора (String, int, String)
+            Constructor<KeyBinding> ctor = KeyBinding.class.getConstructor(String.class, int.class, String.class);
+            KeyBinding binding = ctor.newInstance(translationKey, defaultKey, category);
+            KeyBindingHelper.registerKeyBinding(binding);
+            return binding;
+        } catch (Throwable ignored) {
+            try {
+                // Запасной вариант через рефлексию категорий 1.21.11+
+                for (Constructor<?> ctor : KeyBinding.class.getConstructors()) {
+                    Class<?>[] params = ctor.getParameterTypes();
+                    if (params.length == 3 && params[0] == String.class && params[1] == int.class) {
+                        Object catObj = resolveCategoryObject(params[2]);
+                        KeyBinding binding = (KeyBinding) ctor.newInstance(translationKey, defaultKey, catObj);
+                        KeyBindingHelper.registerKeyBinding(binding);
+                        return binding;
                     }
                 }
-
-                // Конструктор вида (String, InputUtil.Type, int, Category/String)
-                if (params.length == 4 && params[0] == String.class && params[2] == int.class) {
-                    if (params[3] == String.class) {
-                        return (KeyBinding) ctor.newInstance(translationKey, InputUtil.Type.KEYSYM, defaultKey, "category.visuals");
-                    } else {
-                        Object category = resolveCategoryInstance(params[3]);
-                        return (KeyBinding) ctor.newInstance(translationKey, InputUtil.Type.KEYSYM, defaultKey, category);
-                    }
-                }
+            } catch (Throwable fallbackErr) {
+                System.out.println("[VisualMod] KeyBinding fallback to GLFW direct polling.");
             }
-        } catch (Throwable t) {
-            System.out.println("[VisualsMod] KeyBinding registration fallback to GLFW: " + t.getMessage());
         }
         return null;
     }
 
-    private Object resolveCategoryInstance(Class<?> categoryClass) {
+    private Object resolveCategoryObject(Class<?> catClass) {
+        if (catClass == String.class) return "category.visuals";
         try {
-            // В 1.21.11 класс KeyBinding.Category содержит константы MISC, MOVEMENT и т.д.
-            for (Field field : categoryClass.getDeclaredFields()) {
-                if (Modifier.isStatic(field.getModifiers()) && categoryClass.isAssignableFrom(field.getType())) {
-                    field.setAccessible(true);
-                    Object cat = field.get(null);
-                    if (cat != null) return cat;
+            for (Field f : catClass.getDeclaredFields()) {
+                if (Modifier.isStatic(f.getModifiers()) && catClass.isAssignableFrom(f.getType())) {
+                    f.setAccessible(true);
+                    return f.get(null);
                 }
             }
         } catch (Throwable ignored) {}
@@ -135,11 +130,6 @@ public class VisualModClient implements ClientModInitializer {
         return moduleManager;
     }
 
-    /**
-     * Безопасная отрисовка текста, совместимая со всеми версиями 1.21.x.
-     * В 1.21.11 метод DrawContext.drawText изменил возвращаемое значение с int на void,
-     * что вызывает NoSuchMethodError при прямом вызове. Динамический вызов решает проблему.
-     */
     public static void drawTextSafe(DrawContext context, Object textRenderer, String text, int x, int y, int color, boolean shadow) {
         if (!textRendererInitialized) {
             initDrawTextMethods();
@@ -165,7 +155,6 @@ public class VisualModClient implements ClientModInitializer {
         try {
             for (Method m : DrawContext.class.getMethods()) {
                 Class<?>[] params = m.getParameterTypes();
-                // Сигнатура: (TextRenderer, String/Text, int, int, int, boolean)
                 if (params.length == 6 && params[2] == int.class && params[3] == int.class && params[4] == int.class && params[5] == boolean.class) {
                     if (params[1] == String.class && cachedDrawTextString == null) {
                         m.setAccessible(true);
@@ -177,28 +166,31 @@ public class VisualModClient implements ClientModInitializer {
                 }
             }
         } catch (Throwable t) {
-            System.out.println("[VisualsMod] Failed to resolve drawText safely: " + t.getMessage());
+            System.out.println("[VisualMod] Safe text reflection error: " + t.getMessage());
         }
     }
 
     public enum Category {
-        VISUAL("Visuals"),
-        RENDER("Render"),
-        WORLD("World");
+        VISUALS("Visuals", "Display & Enhancements"),
+        ANIMATIONS("Animations", "Custom motion & scales"),
+        REMOVALS("Removals", "PvP cleaner & clutter removal"),
+        WORLD("ESP / World", "World overrides & entity tags"),
+        SETTINGS("Settings", "Client preferences & themes");
 
         private final String displayName;
+        private final String subTitle;
 
-        Category(String displayName) {
+        Category(String displayName, String subTitle) {
             this.displayName = displayName;
+            this.subTitle = subTitle;
         }
 
-        public String getDisplayName() {
-            return displayName;
-        }
+        public String getDisplayName() { return displayName; }
+        public String getSubTitle() { return subTitle; }
     }
 
     public static abstract class Setting<T> {
-        protected String name;
+        protected final String name;
         protected T value;
 
         public Setting(String name, T defaultValue) {
@@ -206,17 +198,9 @@ public class VisualModClient implements ClientModInitializer {
             this.value = defaultValue;
         }
 
-        public String getName() {
-            return name;
-        }
-
-        public T get() {
-            return value;
-        }
-
-        public void set(T value) {
-            this.value = value;
-        }
+        public String getName() { return name; }
+        public T get() { return value; }
+        public void set(T value) { this.value = value; }
     }
 
     public static class BooleanSetting extends Setting<Boolean> {
@@ -229,25 +213,20 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    public static class NumberSetting extends Setting<Double> {
+    public static class SliderSetting extends Setting<Double> {
         private final double min;
         private final double max;
         private final double increment;
 
-        public NumberSetting(String name, double defaultValue, double min, double max, double increment) {
+        public SliderSetting(String name, double defaultValue, double min, double max, double increment) {
             super(name, defaultValue);
             this.min = min;
             this.max = max;
             this.increment = increment;
         }
 
-        public double getMin() {
-            return min;
-        }
-
-        public double getMax() {
-            return max;
-        }
+        public double getMin() { return min; }
+        public double getMax() { return max; }
 
         public void setValueClamped(double val) {
             double precision = 1.0 / increment;
@@ -263,8 +242,7 @@ public class VisualModClient implements ClientModInitializer {
         public ModeSetting(String name, String defaultMode, List<String> modes) {
             super(name, defaultMode);
             this.modes = modes;
-            this.index = modes.indexOf(defaultMode);
-            if (this.index == -1) this.index = 0;
+            this.index = Math.max(0, modes.indexOf(defaultMode));
         }
 
         public void cycle() {
@@ -272,9 +250,39 @@ public class VisualModClient implements ClientModInitializer {
             this.value = modes.get(index);
         }
 
-        public List<String> getModes() {
-            return modes;
+        public List<String> getModes() { return modes; }
+    }
+
+    public static class ColorSetting extends Setting<Integer> {
+        private int red;
+        private int green;
+        private int blue;
+        private int alpha;
+
+        public ColorSetting(String name, int hexWithAlpha) {
+            super(name, hexWithAlpha);
+            updateComponents(hexWithAlpha);
         }
+
+        private void updateComponents(int argb) {
+            this.alpha = (argb >> 24) & 0xFF;
+            this.red = (argb >> 16) & 0xFF;
+            this.green = (argb >> 8) & 0xFF;
+            this.blue = argb & 0xFF;
+        }
+
+        public void setRGBA(int r, int g, int b, int a) {
+            this.red = MathHelper.clamp(r, 0, 255);
+            this.green = MathHelper.clamp(g, 0, 255);
+            this.blue = MathHelper.clamp(b, 0, 255);
+            this.alpha = MathHelper.clamp(a, 0, 255);
+            this.value = (alpha << 24) | (red << 16) | (green << 8) | blue;
+        }
+
+        public int getRed() { return red; }
+        public int getGreen() { return green; }
+        public int getBlue() { return blue; }
+        public int getAlpha() { return alpha; }
     }
 
     public static abstract class Module {
@@ -291,12 +299,7 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         public void toggle() {
-            this.enabled = !this.enabled;
-            if (this.enabled) {
-                onEnable();
-            } else {
-                onDisable();
-            }
+            setEnabled(!this.enabled);
         }
 
         public void setEnabled(boolean state) {
@@ -321,24 +324,18 @@ public class VisualModClient implements ClientModInitializer {
         public List<Setting<?>> getSettings() { return settings; }
     }
 
-    /**
-     * Модуль Aspect Ratio: позволяет изменять соотношение сторон экрана.
-     */
     public static class AspectRatioModule extends Module {
-        public final NumberSetting ratio = new NumberSetting("Ratio", 1.77, 0.50, 2.50, 0.05);
-        public final BooleanSetting custom = new BooleanSetting("Custom Aspect", true);
-        public final ModeSetting presets = new ModeSetting("Presets", "Custom", List.of("Custom", "4:3", "16:9", "1:1", "21:9", "5:4"));
+        public final ModeSetting presets = new ModeSetting("Aspect Preset", "Custom", List.of("Custom", "4:3", "16:9", "1:1", "21:9", "5:4"));
+        public final SliderSetting ratio = new SliderSetting("Ratio Value", 1.77, 0.50, 2.50, 0.05);
 
         public AspectRatioModule() {
-            super("Aspect Ratio", "Changes the camera projection aspect ratio", Category.RENDER);
+            super("Aspect Ratio", "Changes the camera projection aspect ratio", Category.VISUALS);
             registerSetting(presets);
             registerSetting(ratio);
-            registerSetting(custom);
         }
 
         public float getAspectRatio(float defaultAspect) {
             if (!isEnabled()) return defaultAspect;
-
             return switch (presets.get()) {
                 case "4:3" -> 4.0f / 3.0f;
                 case "16:9" -> 16.0f / 9.0f;
@@ -351,39 +348,30 @@ public class VisualModClient implements ClientModInitializer {
 
         public Matrix4f applyProjection(Matrix4f matrix, float fov, float defaultAspect, float nearPlane, float farPlane) {
             if (!isEnabled()) return matrix;
-            float newAspect = getAspectRatio(defaultAspect);
+            float targetAspect = getAspectRatio(defaultAspect);
             matrix.identity();
-            return matrix.perspective((float) Math.toRadians(fov), newAspect, nearPlane, farPlane);
+            return matrix.perspective((float) Math.toRadians(fov), targetAspect, nearPlane, farPlane);
         }
     }
 
-    /**
-     * Модуль Ambience: управление визуальной атмосферой мира.
-     */
     public static class AmbienceModule extends Module {
         public final ModeSetting timeMode = new ModeSetting("Time", "Sunset", List.of("Day", "Sunset", "Night", "Custom", "Cycle"));
-        public final NumberSetting customTime = new NumberSetting("Custom Time", 18000, 0, 24000, 500);
-        public final BooleanSetting customFog = new BooleanSetting("Custom Fog", true);
-        public final NumberSetting fogRed = new NumberSetting("Fog Red", 0.6, 0.0, 1.0, 0.05);
-        public final NumberSetting fogGreen = new NumberSetting("Fog Green", 0.3, 0.0, 1.0, 0.05);
-        public final NumberSetting fogBlue = new NumberSetting("Fog Blue", 0.8, 0.0, 1.0, 0.05);
-
+        public final SliderSetting customTime = new SliderSetting("Custom Time", 18000, 0, 24000, 500);
+        public final BooleanSetting customFog = new BooleanSetting("Fog Override", true);
+        public final ColorSetting fogColor = new ColorSetting("Fog Color", 0xFF6366F1);
         private long cycleTicks = 0;
 
         public AmbienceModule() {
-            super("Ambience", "Customizes the sky, time of day, and fog atmosphere", Category.WORLD);
+            super("Ambience", "Custom sky time and fog atmosphere", Category.WORLD);
             registerSetting(timeMode);
             registerSetting(customTime);
             registerSetting(customFog);
-            registerSetting(fogRed);
-            registerSetting(fogGreen);
-            registerSetting(fogBlue);
+            registerSetting(fogColor);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.world == null) return;
-
             long targetTime = switch (timeMode.get()) {
                 case "Day" -> 1000L;
                 case "Sunset" -> 12800L;
@@ -394,8 +382,173 @@ public class VisualModClient implements ClientModInitializer {
                 }
                 default -> customTime.get().longValue();
             };
-
             client.world.setTimeOfDay(targetTime);
+        }
+    }
+
+    public static class LowFireModule extends Module {
+        public final SliderSetting height = new SliderSetting("Fire Height", 0.20, 0.0, 1.0, 0.05);
+
+        public LowFireModule() {
+            super("Low Fire", "Lowers or disables first-person fire overlay", Category.REMOVALS);
+            registerSetting(height);
+        }
+    }
+
+    public static class LowShieldModule extends Module {
+        public final SliderSetting offsetY = new SliderSetting("Offset Y", 0.25, 0.0, 0.60, 0.05);
+        public final SliderSetting scale = new SliderSetting("Shield Scale", 0.75, 0.30, 1.0, 0.05);
+
+        public LowShieldModule() {
+            super("Low Shield", "Lowers offhand shield position to clear FOV", Category.REMOVALS);
+            registerSetting(offsetY);
+            registerSetting(scale);
+        }
+    }
+
+    public static class NoHurtCamModule extends Module {
+        public final SliderSetting intensity = new SliderSetting("Cam Shake", 0.0, 0.0, 1.0, 0.1);
+
+        public NoHurtCamModule() {
+            super("No Hurt Cam", "Disables camera shake when taking damage", Category.REMOVALS);
+            registerSetting(intensity);
+        }
+    }
+
+    public static class NoPumpkinOverlayModule extends Module {
+        public NoPumpkinOverlayModule() {
+            super("No Pumpkin", "Removes carved pumpkin head overlay", Category.REMOVALS);
+        }
+    }
+
+    public static class NoPortalOverlayModule extends Module {
+        public NoPortalOverlayModule() {
+            super("No Portal", "Removes nether portal nausea & distortion", Category.REMOVALS);
+        }
+    }
+
+    public static class AntiBlindnessModule extends Module {
+        public final BooleanSetting removeDarkness = new BooleanSetting("Remove Darkness", true);
+        public final BooleanSetting removeBlindness = new BooleanSetting("Remove Blindness", true);
+
+        public AntiBlindnessModule() {
+            super("Anti Blindness", "Disables warden darkness flashes and blindness", Category.REMOVALS);
+            registerSetting(removeDarkness);
+            registerSetting(removeBlindness);
+        }
+    }
+
+    public static class NameTagsModule extends Module {
+        public final BooleanSetting showHealth = new BooleanSetting("Health Bar", true);
+        public final BooleanSetting showPing = new BooleanSetting("Ping Indicator", true);
+        public final BooleanSetting showEquipment = new BooleanSetting("Equipment & Durability", true);
+        public final SliderSetting scaleFactor = new SliderSetting("Plate Scale", 1.0, 0.5, 2.0, 0.1);
+        public final ColorSetting tagColor = new ColorSetting("Background Color", 0xCC111116);
+
+        public NameTagsModule() {
+            super("NameTags", "Smooth distance-scaled player plates with HP & armor", Category.WORLD);
+            registerSetting(showHealth);
+            registerSetting(showPing);
+            registerSetting(showEquipment);
+            registerSetting(scaleFactor);
+            registerSetting(tagColor);
+        }
+
+        public void renderInWorld(WorldRenderContext context) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.world == null || mc.player == null) return;
+
+            Camera camera = context.camera();
+            Vec3d camPos = camera.getPos();
+            MatrixStack matrices = context.matrixStack();
+            VertexConsumerProvider consumers = context.consumers();
+
+            if (matrices == null || consumers == null) return;
+
+            for (PlayerEntity target : mc.world.getPlayers()) {
+                if (target == mc.player || !target.isAlive()) continue;
+
+                matrices.push();
+
+                // Вычисление смещения относительно камеры
+                double posX = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderX, target.getX()) - camPos.x;
+                double posY = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderY, target.getY()) - camPos.y + target.getHeight() + 0.55;
+                double posZ = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderZ, target.getZ()) - camPos.z;
+
+                matrices.translate(posX, posY, posZ);
+
+                // Поворот плашки лицом к камере
+                matrices.multiply(camera.getRotation());
+
+                // Динамическое масштабирование от дистанции
+                double distance = camPos.distanceTo(target.getPos());
+                float scale = (float) Math.max(0.015f * scaleFactor.get(), (distance * 0.0028f) * scaleFactor.get());
+                matrices.scale(-scale, -scale, scale);
+
+                renderPlate(matrices, consumers, target, mc);
+
+                matrices.pop();
+            }
+        }
+
+        private void renderPlate(MatrixStack matrices, VertexConsumerProvider consumers, PlayerEntity player, MinecraftClient mc) {
+            TextRenderer tr = mc.textRenderer;
+            String name = player.getName().getString();
+
+            int ping = -1;
+            if (mc.getNetworkHandler() != null) {
+                PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(player.getUuid());
+                if (entry != null) ping = entry.getLatency();
+            }
+
+            String pingStr = (showPing.get() && ping >= 0) ? " " + ping + "ms" : "";
+            float hp = player.getHealth() + player.getAbsorptionAmount();
+            float maxHp = player.getMaxHealth() + player.getAbsorptionAmount();
+            String hpStr = String.format(" %.1f", hp);
+
+            String fullText = name + pingStr + (showHealth.get() ? hpStr : "");
+            int textWidth = tr.getWidth(fullText);
+            int halfWidth = textWidth / 2 + 6;
+
+            // Рендер текста никнейма и статуса
+            tr.draw(
+                    Text.literal(fullText),
+                    -textWidth / 2f,
+                    -10,
+                    0xFFFFFF,
+                    true,
+                    matrices.peek().getPositionMatrix(),
+                    consumers,
+                    TextRenderer.TextLayerType.SEE_THROUGH,
+                    0,
+                    15728880
+            );
+
+            // Рендер полоски здоровья под ником
+            if (showHealth.get()) {
+                float hpPercent = MathHelper.clamp(hp / maxHp, 0.0f, 1.0f);
+                int barWidth = (int) ((halfWidth * 2) * hpPercent);
+                int hpColor = getHealthColor(hpPercent);
+
+                tr.draw(
+                        Text.literal("▪".repeat(Math.max(1, barWidth / 4))),
+                        -halfWidth,
+                        2,
+                        hpColor,
+                        false,
+                        matrices.peek().getPositionMatrix(),
+                        consumers,
+                        TextRenderer.TextLayerType.SEE_THROUGH,
+                        0,
+                        15728880
+                );
+            }
+        }
+
+        private int getHealthColor(float percent) {
+            int r = (int) (255 * (1.0f - percent));
+            int g = (int) (255 * percent);
+            return 0xFF000000 | (r << 16) | (g << 8);
         }
     }
 
@@ -403,28 +556,36 @@ public class VisualModClient implements ClientModInitializer {
         private final List<Module> modules = new ArrayList<>();
 
         public void init() {
+            // Visuals
             modules.add(new AspectRatioModule());
+
+            // Removals
+            modules.add(new LowFireModule());
+            modules.add(new LowShieldModule());
+            modules.add(new NoHurtCamModule());
+            modules.add(new NoPumpkinOverlayModule());
+            modules.add(new NoPortalOverlayModule());
+            modules.add(new AntiBlindnessModule());
+
+            // ESP & World
+            modules.add(new NameTagsModule());
             modules.add(new AmbienceModule());
         }
 
         public void onTick(MinecraftClient client) {
-            for (Module mod : modules) {
-                if (mod.isEnabled()) {
-                    mod.onTick(client);
+            for (Module m : modules) {
+                if (m.isEnabled()) {
+                    m.onTick(client);
                 }
             }
         }
 
-        public List<Module> getModules() {
-            return modules;
-        }
+        public List<Module> getModules() { return modules; }
 
-        public List<Module> getModulesByCategory(Category category) {
+        public List<Module> getModulesByCategory(Category cat) {
             List<Module> list = new ArrayList<>();
             for (Module m : modules) {
-                if (m.getCategory() == category) {
-                    list.add(m);
-                }
+                if (m.getCategory() == cat) list.add(m);
             }
             return list;
         }
@@ -438,30 +599,86 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    public static class ClickGuiScreen extends Screen {
-        private final List<GuiPanel> panels = new ArrayList<>();
+    public static class ModernDeltaClickGui extends Screen {
+        private final ModuleManager moduleManager;
+        private Category selectedCategory = Category.VISUALS;
 
-        public ClickGuiScreen(ModuleManager moduleManager) {
-            super(Text.literal("Visuals Client ClickGUI"));
+        private final int guiWidth = 520;
+        private final int guiHeight = 330;
+        private int leftX;
+        private int topY;
 
-            int startX = 30;
-            int startY = 30;
-            int panelWidth = 120;
+        private final List<DeltaModuleCard> cards = new ArrayList<>();
 
-            for (Category cat : Category.values()) {
-                List<Module> mods = moduleManager.getModulesByCategory(cat);
-                panels.add(new GuiPanel(cat.getDisplayName(), startX, startY, panelWidth, mods));
-                startX += panelWidth + 20;
+        public ModernDeltaClickGui(ModuleManager moduleManager) {
+            super(Text.literal("Delta Client Visuals"));
+            this.moduleManager = moduleManager;
+        }
+
+        @Override
+        protected void init() {
+            this.leftX = (this.width - guiWidth) / 2;
+            this.topY = (this.height - guiHeight) / 2;
+            reloadCategoryCards();
+        }
+
+        private void reloadCategoryCards() {
+            cards.clear();
+            List<Module> mods = moduleManager.getModulesByCategory(selectedCategory);
+            int startCardY = topY + 48;
+            for (Module mod : mods) {
+                cards.add(new DeltaModuleCard(mod, leftX + 145, startCardY, guiWidth - 155));
+                startCardY += 40;
             }
         }
 
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-            // Надежное полупрозрачное затемнение фона без зависимости от сигнатуры renderBackground
-            context.fill(0, 0, this.width, this.height, 0x88000000);
+            // Эффект глубокого затемнения фона (Vignette / Blur Dim)
+            context.fill(0, 0, this.width, this.height, 0x990A0A0F);
 
-            for (GuiPanel panel : panels) {
-                panel.render(context, mouseX, mouseY);
+            // Основной каркас окна в палитре Delta (#0F0F14 / #16161E)
+            renderRoundedCard(context, leftX, topY, guiWidth, guiHeight, 0xF00F0F14, 0x446366F1);
+
+            // Отрисовка боковой панели навигации (Sidebar)
+            context.fill(leftX, topY, leftX + 135, topY + guiHeight, 0xEE14141C);
+            context.fill(leftX + 135, topY, leftX + 136, topY + guiHeight, 0x22818CF8);
+
+            // Логотип и брендинг Delta Client
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawTextSafe(context, mc.textRenderer, "DELTA", leftX + 14, topY + 16, 0xFF818CF8, true);
+            drawTextSafe(context, mc.textRenderer, "CLIENT 1.21.11", leftX + 48, topY + 17, 0xFF888899, false);
+
+            // Элементы категорий слева
+            int catY = topY + 46;
+            for (Category cat : Category.values()) {
+                boolean isCurrent = (cat == selectedCategory);
+                boolean hovered = mouseX >= leftX + 8 && mouseX <= leftX + 128 && mouseY >= catY && mouseY <= catY + 28;
+
+                if (isCurrent) {
+                    renderRoundedCard(context, leftX + 8, catY, 120, 28, 0xFF1E1E2A, 0x886366F1);
+                    context.fill(leftX + 8, catY + 5, leftX + 11, catY + 23, 0xFF6366F1); // Левая неоновая полоса
+                } else if (hovered) {
+                    context.fill(leftX + 8, catY, leftX + 128, catY + 28, 0x33252535);
+                }
+
+                int textColor = isCurrent ? 0xFFFFFFFF : (hovered ? 0xFFD1D5DB : 0xFF71717A);
+                drawTextSafe(context, mc.textRenderer, cat.getDisplayName(), leftX + 18, catY + 6, textColor, false);
+                drawTextSafe(context, mc.textRenderer, cat.getSubTitle(), leftX + 18, catY + 16, 0xFF52525B, false);
+
+                catY += 32;
+            }
+
+            // Заголовок активной секции справа
+            drawTextSafe(context, mc.textRenderer, selectedCategory.getDisplayName().toUpperCase(), leftX + 148, topY + 16, 0xFFFFFFFF, true);
+            drawTextSafe(context, mc.textRenderer, selectedCategory.getSubTitle(), leftX + 148, topY + 28, 0xFF71717A, false);
+
+            // Карточки модулей
+            int currentCardY = topY + 44;
+            for (DeltaModuleCard card : cards) {
+                card.setY(currentCardY);
+                card.render(context, mouseX, mouseY);
+                currentCardY += card.getTotalHeight() + 6;
             }
 
             super.render(context, mouseX, mouseY, delta);
@@ -469,26 +686,41 @@ public class VisualModClient implements ClientModInitializer {
 
         @Override
         public boolean mouseClicked(double mouseX, double mouseY, int button) {
-            for (int i = panels.size() - 1; i >= 0; i--) {
-                if (panels.get(i).mouseClicked((int) mouseX, (int) mouseY, button)) {
+            // Клик по боковой панели
+            if (mouseX >= leftX + 8 && mouseX <= leftX + 128) {
+                int catY = topY + 46;
+                for (Category cat : Category.values()) {
+                    if (mouseY >= catY && mouseY <= catY + 28) {
+                        this.selectedCategory = cat;
+                        reloadCategoryCards();
+                        return true;
+                    }
+                    catY += 32;
+                }
+            }
+
+            // Клик по модулям
+            for (DeltaModuleCard card : cards) {
+                if (card.mouseClicked((int) mouseX, (int) mouseY, button)) {
                     return true;
                 }
             }
+
             return super.mouseClicked(mouseX, mouseY, button);
         }
 
         @Override
         public boolean mouseReleased(double mouseX, double mouseY, int button) {
-            for (GuiPanel panel : panels) {
-                panel.mouseReleased(button);
+            for (DeltaModuleCard card : cards) {
+                card.mouseReleased(button);
             }
             return super.mouseReleased(mouseX, mouseY, button);
         }
 
         @Override
         public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-            for (GuiPanel panel : panels) {
-                panel.mouseDragged((int) mouseX, (int) mouseY);
+            for (DeltaModuleCard card : cards) {
+                card.mouseDragged((int) mouseX, (int) mouseY);
             }
             return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
         }
@@ -497,205 +729,130 @@ public class VisualModClient implements ClientModInitializer {
         public boolean shouldPause() {
             return false;
         }
+
+        public static void renderRoundedCard(DrawContext context, int x, int y, int w, int h, int bg, int border) {
+            // Плавный стилизованный прямоугольник с обводкой
+            context.fill(x, y, x + w, y + h, bg);
+            context.fill(x, y, x + w, y + 1, border);
+            context.fill(x, y + h - 1, x + w, y + h, border);
+            context.fill(x, y, x + 1, y + h, border);
+            context.fill(x + w - 1, y, x + w, y + h, border);
+        }
     }
 
-    public static class GuiPanel {
-        private final String title;
-        private int x;
+    public static class DeltaModuleCard {
+        private final Module module;
+        private final int x;
         private int y;
         private final int width;
-        private boolean isDragging;
-        private int dragOffsetX;
-        private int dragOffsetY;
-        private final List<ModuleButton> buttons = new ArrayList<>();
+        private boolean expanded = false;
+        private float toggleAnim = 0.0f;
 
-        public GuiPanel(String title, int x, int y, int width, List<Module> modules) {
-            this.title = title;
+        private final List<DeltaSettingWidget> widgets = new ArrayList<>();
+
+        public DeltaModuleCard(Module module, int x, int y, int width) {
+            this.module = module;
             this.x = x;
             this.y = y;
             this.width = width;
+            this.toggleAnim = module.isEnabled() ? 1.0f : 0.0f;
 
-            int currentY = 18;
-            for (Module mod : modules) {
-                buttons.add(new ModuleButton(mod, this, currentY));
-                currentY += 16;
+            for (Setting<?> s : module.getSettings()) {
+                if (s instanceof BooleanSetting b) widgets.add(new DeltaToggleWidget(b));
+                else if (s instanceof SliderSetting sl) widgets.add(new DeltaSliderWidget(sl));
+                else if (s instanceof ModeSetting m) widgets.add(new DeltaModeWidget(m));
+                else if (s instanceof ColorSetting c) widgets.add(new DeltaColorWidget(c));
             }
         }
 
-        public void render(DrawContext context, int mouseX, int mouseY) {
-            int headerHeight = 16;
-            int totalContentHeight = calculateContentHeight();
+        public void setY(int y) { this.y = y; }
 
-            // Фон панели
-            context.fill(x, y + headerHeight, x + width, y + headerHeight + totalContentHeight, 0xDD121217);
-
-            // Шапка панели
-            context.fill(x, y, x + width, y + headerHeight, 0xFF1E1E26);
-            context.fill(x, y + headerHeight - 1, x + width, y + headerHeight, 0xFF6366F1);
-
-            MinecraftClient mc = MinecraftClient.getInstance();
-            drawTextSafe(context, mc.textRenderer, title, x + 6, y + 4, 0xFFFFFFFF, false);
-
-            int offsetY = y + headerHeight;
-            for (ModuleButton btn : buttons) {
-                btn.render(context, x, offsetY, width, mouseX, mouseY);
-                offsetY += btn.getHeight();
-            }
-
-            // Безопасная отрисовка границы
-            drawOutline(context, x, y, width, headerHeight + totalContentHeight, 0x44FFFFFF);
-        }
-
-        private void drawOutline(DrawContext context, int x, int y, int w, int h, int color) {
-            context.fill(x, y, x + w, y + 1, color);
-            context.fill(x, y + h - 1, x + w, y + h, color);
-            context.fill(x, y, x + 1, y + h, color);
-            context.fill(x + w - 1, y, x + w, y + h, color);
-        }
-
-        public int calculateContentHeight() {
-            int height = 0;
-            for (ModuleButton btn : buttons) {
-                height += btn.getHeight();
-            }
-            return Math.max(height, 4);
-        }
-
-        public boolean mouseClicked(int mouseX, int mouseY, int button) {
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 16) {
-                if (button == 0) {
-                    isDragging = true;
-                    dragOffsetX = mouseX - x;
-                    dragOffsetY = mouseY - y;
-                    return true;
-                }
-            }
-
-            int offsetY = y + 16;
-            for (ModuleButton btn : buttons) {
-                if (btn.mouseClicked(x, offsetY, width, mouseX, mouseY, button)) {
-                    return true;
-                }
-                offsetY += btn.getHeight();
-            }
-
-            return false;
-        }
-
-        public void mouseReleased(int button) {
-            if (button == 0) {
-                isDragging = false;
-            }
-            for (ModuleButton btn : buttons) {
-                btn.mouseReleased(button);
-            }
-        }
-
-        public void mouseDragged(int mouseX, int mouseY) {
-            if (isDragging) {
-                x = mouseX - dragOffsetX;
-                y = mouseY - dragOffsetY;
-            }
-            for (ModuleButton btn : buttons) {
-                btn.mouseDragged(mouseX, mouseY);
-            }
-        }
-    }
-
-    public static class ModuleButton {
-        private final Module module;
-        private final GuiPanel parent;
-        private boolean expanded = false;
-        private final List<SettingComponent> settingComponents = new ArrayList<>();
-
-        public ModuleButton(Module module, GuiPanel parent, int relativeY) {
-            this.module = module;
-            this.parent = parent;
-
-            for (Setting<?> setting : module.getSettings()) {
-                if (setting instanceof BooleanSetting bool) {
-                    settingComponents.add(new BooleanComponent(bool));
-                } else if (setting instanceof NumberSetting num) {
-                    settingComponents.add(new SliderComponent(num));
-                } else if (setting instanceof ModeSetting mode) {
-                    settingComponents.add(new ModeComponent(mode));
-                }
-            }
-        }
-
-        public int getHeight() {
-            int h = 16;
+        public int getTotalHeight() {
+            int h = 34;
             if (expanded) {
-                for (SettingComponent comp : settingComponents) {
-                    h += comp.getHeight();
+                for (DeltaSettingWidget w : widgets) {
+                    h += w.getHeight() + 4;
                 }
+                h += 6;
             }
             return h;
         }
 
-        public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
+        public void render(DrawContext context, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 16;
+            boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 34;
 
-            int bgColor = module.isEnabled()
-                    ? (hovered ? 0xFF4F46E5 : 0xFF4338CA)
-                    : (hovered ? 0xFF24242F : 0xFF181820);
+            // Плавная интерполяция переключателя
+            float targetAnim = module.isEnabled() ? 1.0f : 0.0f;
+            toggleAnim += (targetAnim - toggleAnim) * 0.25f;
 
-            context.fill(x + 2, y + 1, x + width - 2, y + 15, bgColor);
+            int cardBg = hovered ? 0xFF1B1B26 : 0xFF14141C;
+            ModernDeltaClickGui.renderRoundedCard(context, x, y, width, getTotalHeight(), cardBg, module.isEnabled() ? 0x666366F1 : 0x22333344);
 
-            int textColor = module.isEnabled() ? 0xFFFFFFFF : 0xFFA0A0AB;
-            drawTextSafe(context, mc.textRenderer, module.getName(), x + 6, y + 4, textColor, false);
+            // Текст названия и описания модуля
+            int titleColor = module.isEnabled() ? 0xFFFFFFFF : 0xFFA1A1AA;
+            drawTextSafe(context, mc.textRenderer, module.getName(), x + 12, y + 8, titleColor, false);
+            drawTextSafe(context, mc.textRenderer, module.getDescription(), x + 12, y + 20, 0xFF52525B, false);
 
-            if (!module.getSettings().isEmpty()) {
-                drawTextSafe(context, mc.textRenderer, expanded ? "-" : "+", x + width - 12, y + 4, 0xFF888899, false);
+            // Неоновый тумблер Toggle Switch справа
+            int switchX = x + width - 38;
+            int switchY = y + 10;
+            int switchBg = (toggleAnim > 0.05f) ? 0xFF6366F1 : 0xFF272732;
+            ModernDeltaClickGui.renderRoundedCard(context, switchX, switchY, 26, 14, switchBg, 0x44FFFFFF);
+
+            int knobX = switchX + 2 + (int) (12 * toggleAnim);
+            context.fill(knobX, switchY + 2, knobX + 10, switchY + 12, 0xFFFFFFFF);
+
+            // Иконка раскрытия параметров (если есть настройки)
+            if (!widgets.isEmpty()) {
+                drawTextSafe(context, mc.textRenderer, expanded ? "▲" : "▼", switchX - 16, y + 13, 0xFF71717A, false);
             }
 
+            // Рендер раскрытых настроек
             if (expanded) {
-                int settingY = y + 16;
-                for (SettingComponent comp : settingComponents) {
-                    comp.render(context, x + 4, settingY, width - 8, mouseX, mouseY);
-                    settingY += comp.getHeight();
+                int widgetY = y + 36;
+                context.fill(x + 8, y + 34, x + width - 8, y + 35, 0x22FFFFFF); // Разделитель
+                for (DeltaSettingWidget w : widgets) {
+                    w.render(context, x + 12, widgetY, width - 24, mouseX, mouseY);
+                    widgetY += w.getHeight() + 4;
                 }
             }
         }
 
-        public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 16) {
+        public boolean mouseClicked(int mouseX, int mouseY, int button) {
+            // Клик по тумблеру или строке
+            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 34) {
                 if (button == 0) {
                     module.toggle();
                     return true;
-                } else if (button == 1) {
+                } else if (button == 1 && !widgets.isEmpty()) {
                     expanded = !expanded;
                     return true;
                 }
             }
 
             if (expanded) {
-                int settingY = y + 16;
-                for (SettingComponent comp : settingComponents) {
-                    if (comp.mouseClicked(x + 4, settingY, width - 8, mouseX, mouseY, button)) {
+                int widgetY = y + 36;
+                for (DeltaSettingWidget w : widgets) {
+                    if (w.mouseClicked(x + 12, widgetY, width - 24, mouseX, mouseY, button)) {
                         return true;
                     }
-                    settingY += comp.getHeight();
+                    widgetY += w.getHeight() + 4;
                 }
             }
             return false;
         }
 
         public void mouseReleased(int button) {
-            for (SettingComponent comp : settingComponents) {
-                comp.mouseReleased(button);
-            }
+            for (DeltaSettingWidget w : widgets) w.mouseReleased(button);
         }
 
         public void mouseDragged(int mouseX, int mouseY) {
-            for (SettingComponent comp : settingComponents) {
-                comp.mouseDragged(mouseX, mouseY);
-            }
+            for (DeltaSettingWidget w : widgets) w.mouseDragged(mouseX, mouseY);
         }
     }
 
-    public interface SettingComponent {
+    public interface DeltaSettingWidget {
         int getHeight();
         void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY);
         boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button);
@@ -703,29 +860,27 @@ public class VisualModClient implements ClientModInitializer {
         default void mouseDragged(int mouseX, int mouseY) {}
     }
 
-    public static class BooleanComponent implements SettingComponent {
+    public static class DeltaToggleWidget implements DeltaSettingWidget {
         private final BooleanSetting setting;
 
-        public BooleanComponent(BooleanSetting setting) {
-            this.setting = setting;
-        }
+        public DeltaToggleWidget(BooleanSetting setting) { this.setting = setting; }
 
         @Override
-        public int getHeight() { return 14; }
+        public int getHeight() { return 18; }
 
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            context.fill(x, y, x + width, y + 13, 0xFF141419);
-            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 4, y + 3, 0xFFCCCCCC, false);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x, y + 4, 0xFFCCCCCC, false);
 
-            int checkColor = setting.get() ? 0xFF22C55E : 0xFFEF4444;
-            context.fill(x + width - 14, y + 2, x + width - 4, y + 12, checkColor);
+            int btnX = x + width - 18;
+            int col = setting.get() ? 0xFF6366F1 : 0xFF272732;
+            ModernDeltaClickGui.renderRoundedCard(context, btnX, y + 2, 14, 14, col, 0x44FFFFFF);
         }
 
         @Override
         public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 14 && button == 0) {
+            if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 18) {
                 setting.toggle();
                 return true;
             }
@@ -733,89 +888,112 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    public static class SliderComponent implements SettingComponent {
-        private final NumberSetting setting;
+    public static class DeltaSliderWidget implements DeltaSettingWidget {
+        private final SliderSetting setting;
         private boolean sliding = false;
-        private int currentX;
-        private int currentWidth;
+        private int lastX, lastW;
 
-        public SliderComponent(NumberSetting setting) {
-            this.setting = setting;
-        }
+        public DeltaSliderWidget(SliderSetting setting) { this.setting = setting; }
 
         @Override
-        public int getHeight() { return 18; }
+        public int getHeight() { return 24; }
 
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
-            this.currentX = x;
-            this.currentWidth = width;
+            this.lastX = x;
+            this.lastW = width;
             MinecraftClient mc = MinecraftClient.getInstance();
 
-            context.fill(x, y, x + width, y + 17, 0xFF141419);
+            String text = String.format("%s: §7%.2f", setting.getName(), setting.get());
+            drawTextSafe(context, mc.textRenderer, text, x, y + 2, 0xFFE2E8F0, false);
+
+            // Полоса слайдера
+            int barY = y + 14;
+            context.fill(x, barY, x + width, barY + 5, 0xFF272732);
 
             double pct = (setting.get() - setting.getMin()) / (setting.getMax() - setting.getMin());
-            int fillWidth = (int) (width * MathHelper.clamp(pct, 0.0, 1.0));
-
-            context.fill(x, y + 12, x + fillWidth, y + 15, 0xFF6366F1);
-            context.fill(x + fillWidth, y + 12, x + width, y + 15, 0xFF2E2E38);
-
-            String text = String.format("%s: %.2f", setting.getName(), setting.get());
-            drawTextSafe(context, mc.textRenderer, text, x + 4, y + 2, 0xFFDDDDDD, false);
+            int fillW = (int) (width * MathHelper.clamp(pct, 0.0, 1.0));
+            context.fill(x, barY, x + fillW, barY + 5, 0xFF6366F1);
         }
 
         @Override
         public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 18 && button == 0) {
-                sliding = true;
-                updateValue(mouseX);
+            if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y + 10 && mouseY <= y + 24) {
+                this.sliding = true;
+                update(mouseX);
                 return true;
             }
             return false;
         }
 
         @Override
-        public void mouseReleased(int button) {
-            sliding = false;
-        }
+        public void mouseReleased(int button) { this.sliding = false; }
 
         @Override
         public void mouseDragged(int mouseX, int mouseY) {
-            if (sliding) {
-                updateValue(mouseX);
-            }
+            if (sliding) update(mouseX);
         }
 
-        private void updateValue(int mouseX) {
-            double percent = (double) (mouseX - currentX) / (double) currentWidth;
-            double newVal = setting.getMin() + (setting.getMax() - setting.getMin()) * percent;
-            setting.setValueClamped(newVal);
+        private void update(int mouseX) {
+            double pct = (double) (mouseX - lastX) / (double) lastW;
+            double val = setting.getMin() + (setting.getMax() - setting.getMin()) * pct;
+            setting.setValueClamped(val);
         }
     }
 
-    public static class ModeComponent implements SettingComponent {
+    public static class DeltaModeWidget implements DeltaSettingWidget {
         private final ModeSetting setting;
 
-        public ModeComponent(ModeSetting setting) {
-            this.setting = setting;
-        }
+        public DeltaModeWidget(ModeSetting setting) { this.setting = setting; }
 
         @Override
-        public int getHeight() { return 15; }
+        public int getHeight() { return 18; }
 
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            context.fill(x, y, x + width, y + 14, 0xFF141419);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x, y + 4, 0xFFCCCCCC, false);
 
-            String text = setting.getName() + ": " + setting.get();
-            drawTextSafe(context, mc.textRenderer, text, x + 4, y + 3, 0xFF93C5FD, false);
+            String modeStr = "§8[§f" + setting.get() + "§8]";
+            int modeW = mc.textRenderer.getWidth(modeStr);
+            drawTextSafe(context, mc.textRenderer, modeStr, x + width - modeW, y + 4, 0xFF818CF8, false);
         }
 
         @Override
         public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 15 && button == 0) {
+            if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 18) {
                 setting.cycle();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    public static class DeltaColorWidget implements DeltaSettingWidget {
+        private final ColorSetting setting;
+
+        public DeltaColorWidget(ColorSetting setting) { this.setting = setting; }
+
+        @Override
+        public int getHeight() { return 18; }
+
+        @Override
+        public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x, y + 4, 0xFFCCCCCC, false);
+
+            // Квадрат предварительного просмотра цвета с альфой
+            int previewX = x + width - 24;
+            context.fill(previewX, y + 2, previewX + 20, y + 16, setting.get());
+            ModernDeltaClickGui.renderRoundedCard(context, previewX, y + 2, 20, 14, 0x00000000, 0x66FFFFFF);
+        }
+
+        @Override
+        public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
+            if (button == 0 && mouseX >= x + width - 24 && mouseX <= x + width && mouseY >= y && mouseY <= y + 18) {
+                // Циклический сдвиг оттенков для быстрого переключения в GUI
+                int nextHue = (setting.getRed() + 40) % 256;
+                setting.setRGBA(nextHue, setting.getGreen(), setting.getBlue(), setting.getAlpha());
                 return true;
             }
             return false;
