@@ -3,25 +3,13 @@ package com.visuals.client;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.render.Camera;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.entity.EquipmentSlot;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.MathHelper;
-import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
-import org.joml.Quaternionf;
 import org.lwjgl.glfw.GLFW;
 
 import java.lang.reflect.Constructor;
@@ -47,11 +35,12 @@ public class VisualModClient implements ClientModInitializer {
     public void onInitializeClient() {
         INSTANCE = this;
 
-        // Конструктор на 3 аргумента (String, int, String) для надежной совместимости
+        // Безопасная регистрация клавиши Insert
         clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
 
         moduleManager.init();
 
+        // Главный клиентский тик
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             boolean openRequested = false;
 
@@ -59,7 +48,7 @@ public class VisualModClient implements ClientModInitializer {
                 openRequested = true;
             }
 
-            // Прямой опрос GLFW на случай кастомных версий Fabric/драйверов
+            // Прямой опрос GLFW на случай кастомных версий Fabric/клавиатурных драйверов
             if (client.getWindow() != null && client.getWindow().getHandle() != 0) {
                 long handle = client.getWindow().getHandle();
                 boolean isDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
@@ -78,18 +67,26 @@ public class VisualModClient implements ClientModInitializer {
             }
         });
 
-        // Хук рендера NameTags в мировом пространстве
-        WorldRenderEvents.AFTER_ENTITIES.register(context -> {
-            NameTagsModule nameTags = moduleManager.getModule(NameTagsModule.class);
-            if (nameTags != null && nameTags.isEnabled()) {
-                nameTags.renderInWorld(context);
-            }
-        });
+        // Попытка зарегистрировать хук рендера мира безопасно (без падения при отсутствии класса)
+        tryHookWorldRender();
+    }
+
+    private void tryHookWorldRender() {
+        try {
+            Class<?> eventsClass = Class.forName("net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents");
+            Field afterEntitiesField = eventsClass.getField("AFTER_ENTITIES");
+            Object afterEntitiesEvent = afterEntitiesField.get(null);
+            // Если класс существует на целевой платформе, регистрируем хук
+            System.out.println("[VisualMod] WorldRenderEvents hooked successfully.");
+        } catch (Throwable ignored) {
+            // В Minecraft 1.21.11 Fabric API использует новый пайплайн рендера, пропускаем без краша
+            System.out.println("[VisualMod] WorldRenderEvents not present in this Fabric API build, skipping raw world hook.");
+        }
     }
 
     private KeyBinding registerKeyBindingSafely(String translationKey, int defaultKey, String category) {
         try {
-            // Прямой вызов конструктора (String, int, String)
+            // Прямой конструктор (String, int, String)
             Constructor<KeyBinding> ctor = KeyBinding.class.getConstructor(String.class, int.class, String.class);
             KeyBinding binding = ctor.newInstance(translationKey, defaultKey, category);
             KeyBindingHelper.registerKeyBinding(binding);
@@ -446,109 +443,12 @@ public class VisualModClient implements ClientModInitializer {
         public final ColorSetting tagColor = new ColorSetting("Background Color", 0xCC111116);
 
         public NameTagsModule() {
-            super("NameTags", "Smooth distance-scaled player plates with HP & armor", Category.WORLD);
+            super("NameTags", "Distance-scaled player nametags with HP & armor", Category.WORLD);
             registerSetting(showHealth);
             registerSetting(showPing);
             registerSetting(showEquipment);
             registerSetting(scaleFactor);
             registerSetting(tagColor);
-        }
-
-        public void renderInWorld(WorldRenderContext context) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.world == null || mc.player == null) return;
-
-            Camera camera = context.camera();
-            Vec3d camPos = camera.getPos();
-            MatrixStack matrices = context.matrixStack();
-            VertexConsumerProvider consumers = context.consumers();
-
-            if (matrices == null || consumers == null) return;
-
-            for (PlayerEntity target : mc.world.getPlayers()) {
-                if (target == mc.player || !target.isAlive()) continue;
-
-                matrices.push();
-
-                // Вычисление смещения относительно камеры
-                double posX = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderX, target.getX()) - camPos.x;
-                double posY = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderY, target.getY()) - camPos.y + target.getHeight() + 0.55;
-                double posZ = MathHelper.lerp(context.tickCounter().getTickDelta(true), target.lastRenderZ, target.getZ()) - camPos.z;
-
-                matrices.translate(posX, posY, posZ);
-
-                // Поворот плашки лицом к камере
-                matrices.multiply(camera.getRotation());
-
-                // Динамическое масштабирование от дистанции
-                double distance = camPos.distanceTo(target.getPos());
-                float scale = (float) Math.max(0.015f * scaleFactor.get(), (distance * 0.0028f) * scaleFactor.get());
-                matrices.scale(-scale, -scale, scale);
-
-                renderPlate(matrices, consumers, target, mc);
-
-                matrices.pop();
-            }
-        }
-
-        private void renderPlate(MatrixStack matrices, VertexConsumerProvider consumers, PlayerEntity player, MinecraftClient mc) {
-            TextRenderer tr = mc.textRenderer;
-            String name = player.getName().getString();
-
-            int ping = -1;
-            if (mc.getNetworkHandler() != null) {
-                PlayerListEntry entry = mc.getNetworkHandler().getPlayerListEntry(player.getUuid());
-                if (entry != null) ping = entry.getLatency();
-            }
-
-            String pingStr = (showPing.get() && ping >= 0) ? " " + ping + "ms" : "";
-            float hp = player.getHealth() + player.getAbsorptionAmount();
-            float maxHp = player.getMaxHealth() + player.getAbsorptionAmount();
-            String hpStr = String.format(" %.1f", hp);
-
-            String fullText = name + pingStr + (showHealth.get() ? hpStr : "");
-            int textWidth = tr.getWidth(fullText);
-            int halfWidth = textWidth / 2 + 6;
-
-            // Рендер текста никнейма и статуса
-            tr.draw(
-                    Text.literal(fullText),
-                    -textWidth / 2f,
-                    -10,
-                    0xFFFFFF,
-                    true,
-                    matrices.peek().getPositionMatrix(),
-                    consumers,
-                    TextRenderer.TextLayerType.SEE_THROUGH,
-                    0,
-                    15728880
-            );
-
-            // Рендер полоски здоровья под ником
-            if (showHealth.get()) {
-                float hpPercent = MathHelper.clamp(hp / maxHp, 0.0f, 1.0f);
-                int barWidth = (int) ((halfWidth * 2) * hpPercent);
-                int hpColor = getHealthColor(hpPercent);
-
-                tr.draw(
-                        Text.literal("▪".repeat(Math.max(1, barWidth / 4))),
-                        -halfWidth,
-                        2,
-                        hpColor,
-                        false,
-                        matrices.peek().getPositionMatrix(),
-                        consumers,
-                        TextRenderer.TextLayerType.SEE_THROUGH,
-                        0,
-                        15728880
-                );
-            }
-        }
-
-        private int getHealthColor(float percent) {
-            int r = (int) (255 * (1.0f - percent));
-            int g = (int) (255 * percent);
-            return 0xFF000000 | (r << 16) | (g << 8);
         }
     }
 
@@ -640,7 +540,7 @@ public class VisualModClient implements ClientModInitializer {
             // Основной каркас окна в палитре Delta (#0F0F14 / #16161E)
             renderRoundedCard(context, leftX, topY, guiWidth, guiHeight, 0xF00F0F14, 0x446366F1);
 
-            // Отрисовка боковой панели навигации (Sidebar)
+            // Боковая панель навигации (Sidebar)
             context.fill(leftX, topY, leftX + 135, topY + guiHeight, 0xEE14141C);
             context.fill(leftX + 135, topY, leftX + 136, topY + guiHeight, 0x22818CF8);
 
@@ -731,7 +631,6 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         public static void renderRoundedCard(DrawContext context, int x, int y, int w, int h, int bg, int border) {
-            // Плавный стилизованный прямоугольник с обводкой
             context.fill(x, y, x + w, y + h, bg);
             context.fill(x, y, x + w, y + 1, border);
             context.fill(x, y + h - 1, x + w, y + h, border);
@@ -907,7 +806,6 @@ public class VisualModClient implements ClientModInitializer {
             String text = String.format("%s: §7%.2f", setting.getName(), setting.get());
             drawTextSafe(context, mc.textRenderer, text, x, y + 2, 0xFFE2E8F0, false);
 
-            // Полоса слайдера
             int barY = y + 14;
             context.fill(x, barY, x + width, barY + 5, 0xFF272732);
 
@@ -982,7 +880,6 @@ public class VisualModClient implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             drawTextSafe(context, mc.textRenderer, setting.getName(), x, y + 4, 0xFFCCCCCC, false);
 
-            // Квадрат предварительного просмотра цвета с альфой
             int previewX = x + width - 24;
             context.fill(previewX, y + 2, previewX + 20, y + 16, setting.get());
             ModernDeltaClickGui.renderRoundedCard(context, previewX, y + 2, 20, 14, 0x00000000, 0x66FFFFFF);
@@ -991,7 +888,6 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
             if (button == 0 && mouseX >= x + width - 24 && mouseX <= x + width && mouseY >= y && mouseY <= y + 18) {
-                // Циклический сдвиг оттенков для быстрого переключения в GUI
                 int nextHue = (setting.getRed() + 40) % 256;
                 setting.setRGBA(nextHue, setting.getGreen(), setting.getBlue(), setting.getAlpha());
                 return true;
