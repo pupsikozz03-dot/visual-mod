@@ -9,6 +9,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.option.KeyBinding;
@@ -54,8 +55,10 @@ public class VisualModClient implements ClientModInitializer {
     private static boolean textRendererInitialized = false;
 
     private KeyBinding clickGuiKey;
+    private KeyBinding cosmeticsGuiKey;
     private final ModuleManager moduleManager = new ModuleManager();
     private boolean wasInsertKeyDown = false;
+    private boolean wasRShiftKeyDown = false;
     private final boolean[] keyStates = new boolean[512];
 
     public static LivingEntity currentCombatTarget = null;
@@ -64,9 +67,9 @@ public class VisualModClient implements ClientModInitializer {
     public void onInitializeClient() {
         INSTANCE = this;
         clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
+        cosmeticsGuiKey = registerKeyBindingSafely("key.visuals.cosmetics", GLFW.GLFW_KEY_RIGHT_SHIFT, "category.visuals");
         moduleManager.init();
 
-        // 1. HUD Рендеринг (TargetHUD и кастомный Crosshair)
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc == null || mc.player == null || mc.options.hudHidden) return;
@@ -82,23 +85,24 @@ public class VisualModClient implements ClientModInitializer {
             }
         });
 
-        // 2. Тик клиента: опрос горячих клавиш, биндов и логика модулей
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            boolean openRequested = false;
+            boolean openClickGuiRequested = false;
+            boolean openCosmeticsRequested = false;
 
-            if (clickGuiKey != null && clickGuiKey.wasPressed()) {
-                openRequested = true;
-            }
+            if (clickGuiKey != null && clickGuiKey.wasPressed()) openClickGuiRequested = true;
+            if (cosmeticsGuiKey != null && cosmeticsGuiKey.wasPressed()) openCosmeticsRequested = true;
 
             if (client.getWindow() != null && client.getWindow().getHandle() != 0) {
                 long handle = client.getWindow().getHandle();
-                boolean isDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
-                if (isDown && !wasInsertKeyDown) {
-                    openRequested = true;
-                }
-                wasInsertKeyDown = isDown;
+                boolean isInsertDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
+                boolean isRShiftDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
 
-                // Обработка биндов модулей в игре (когда не открыты чат/интерфейсы)
+                if (isInsertDown && !wasInsertKeyDown) openClickGuiRequested = true;
+                if (isRShiftDown && !wasRShiftKeyDown) openCosmeticsRequested = true;
+
+                wasInsertKeyDown = isInsertDown;
+                wasRShiftKeyDown = isRShiftDown;
+
                 if (client.currentScreen == null) {
                     for (Module m : moduleManager.getAllModules()) {
                         int bind = m.getKeyBind();
@@ -114,14 +118,15 @@ public class VisualModClient implements ClientModInitializer {
                 }
             }
 
-            if (openRequested && client.currentScreen == null) {
+            if (openClickGuiRequested && client.currentScreen == null) {
                 client.setScreen(new ModernRefinedClickGui(moduleManager));
+            } else if (openCosmeticsRequested && client.currentScreen == null) {
+                client.setScreen(new CosmeticsScreen(moduleManager));
             }
 
             if (client.world != null && client.player != null) {
                 moduleManager.onTick(client);
 
-                // Ограничение дистанции цели TargetHUD
                 TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
                 double maxRange = th != null ? th.maxDistance.get() : 24.0;
                 double maxRangeSq = maxRange * maxRange;
@@ -132,7 +137,6 @@ public class VisualModClient implements ClientModInitializer {
                     }
                 }
 
-                // Захват цели из луча прицела
                 if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() instanceof LivingEntity living) {
                     if (living.isAlive() && living != client.player && client.player.squaredDistanceTo(living) <= maxRangeSq) {
                         currentCombatTarget = living;
@@ -263,9 +267,6 @@ public class VisualModClient implements ClientModInitializer {
         } catch (Throwable ignored) {}
     }
 
-    // ==========================================
-    // КАТЕГОРИИ И НАСТРОЙКИ
-    // ==========================================
     public enum Category {
         COMBAT("Combat", "⚔"),
         MOVEMENT("Movement", "»"),
@@ -343,11 +344,15 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         public List<String> getModes() { return modes; }
+        public void setMode(String mode) {
+            int idx = modes.indexOf(mode);
+            if (idx != -1) {
+                this.index = idx;
+                this.value = mode;
+            }
+        }
     }
 
-    // ==========================================
-    // БАЗОВЫЙ МОДУЛЬ
-    // ==========================================
     public static abstract class Module {
         private final String name;
         private final String description;
@@ -408,9 +413,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // 1. COMBAT МОДУЛИ
-    // ==========================================
     public static class TriggerBotModule extends Module {
         public final SliderSetting cooldown = new SliderSetting("Кулдаун", 0.95, 0.70, 1.0, 0.02, "%");
         public final BooleanSetting critOnly = new BooleanSetting("Только криты", false);
@@ -447,26 +449,38 @@ public class VisualModClient implements ClientModInitializer {
                     && !client.player.isSprinting();
         }
 
-        private Entity findTarget(MinecraftClient client) {
-            if (client.crosshairTarget instanceof EntityHitResult entityHit) {
-                return entityHit.getEntity();
-            }
+        public static Entity findTarget(MinecraftClient client) {
+            if (client.player == null || client.world == null) return null;
 
             HitBoxesModule hb = VisualModClient.INSTANCE.getModuleManager().getModule(HitBoxesModule.class);
             float expand = (hb != null && hb.isEnabled()) ? hb.getExpansion() : 0.0f;
-            if (expand > 0.0f && client.world != null) {
-                Vec3d cameraPos = client.player.getCameraPosVec(1.0f);
-                Vec3d rot = client.player.getRotationVec(1.0f);
-                Vec3d reach = cameraPos.add(rot.multiply(3.8));
 
-                for (Entity e : client.world.getEntities()) {
-                    if (e instanceof LivingEntity living && living != client.player && living.isAlive()) {
-                        Box box = living.getBoundingBox().expand(expand);
-                        if (box.raycast(cameraPos, reach).isPresent()) {
-                            return living;
+            Vec3d cameraPos = client.player.getCameraPosVec(1.0f);
+            Vec3d rot = client.player.getRotationVec(1.0f);
+            double reachDist = 3.6 + expand;
+            Vec3d reach = cameraPos.add(rot.multiply(reachDist));
+
+            Entity bestEntity = null;
+            double closestDistance = Double.MAX_VALUE;
+
+            for (Entity e : client.world.getEntities()) {
+                if (e instanceof LivingEntity living && living != client.player && living.isAlive()) {
+                    Box box = living.getBoundingBox().expand(expand);
+                    var hitOpt = box.raycast(cameraPos, reach);
+                    if (hitOpt.isPresent()) {
+                        double d = cameraPos.squaredDistanceTo(hitOpt.get());
+                        if (d < closestDistance) {
+                            closestDistance = d;
+                            bestEntity = living;
                         }
                     }
                 }
+            }
+
+            if (bestEntity != null) return bestEntity;
+
+            if (client.crosshairTarget instanceof EntityHitResult entityHit) {
+                return entityHit.getEntity();
             }
             return null;
         }
@@ -517,9 +531,10 @@ public class VisualModClient implements ClientModInitializer {
                     double targetCps = min + (max - min) * random.nextDouble();
                     currentDelayMs = (long) (1000.0 / Math.max(1.0, targetCps));
 
-                    if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() != null) {
-                        client.interactionManager.attackEntity(client.player, eHit.getEntity());
-                        if (eHit.getEntity() instanceof LivingEntity living) {
+                    Entity target = TriggerBotModule.findTarget(client);
+                    if (target != null) {
+                        client.interactionManager.attackEntity(client.player, target);
+                        if (target instanceof LivingEntity living) {
                             currentCombatTarget = living;
                         }
                     }
@@ -542,7 +557,7 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
-            if (client.player.hurtTime == 9) {
+            if (client.player.hurtTime > 0) {
                 double h = horizontal.get();
                 double v = vertical.get();
                 Vec3d vel = client.player.getVelocity();
@@ -551,9 +566,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // 2. RENDER МОДУЛИ
-    // ==========================================
     public static class TargetHudModule extends Module {
         public final SliderSetting xPos = new SliderSetting("Позиция X", 0.52, 0.05, 0.90, 0.01, "");
         public final SliderSetting yPos = new SliderSetting("Позиция Y", 0.60, 0.05, 0.90, 0.01, "");
@@ -576,7 +588,7 @@ public class VisualModClient implements ClientModInitializer {
 
         public void render(DrawContext context, MinecraftClient mc) {
             LivingEntity target = currentCombatTarget;
-            boolean preview = (target == null && mc.currentScreen instanceof ModernRefinedClickGui && mc.player != null);
+            boolean preview = (target == null && (mc.currentScreen instanceof ModernRefinedClickGui || mc.currentScreen instanceof CosmeticsScreen) && mc.player != null);
             if (preview) target = mc.player;
 
             double maxDist = maxDistance.get();
@@ -732,7 +744,7 @@ public class VisualModClient implements ClientModInitializer {
             if (module == null || !module.isEnabled()) return;
 
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (entity == mc.player && mc.options.getPerspective().isFirstPerson()) return;
+            if (entity == mc.player && mc.options.getPerspective().isFirstPerson() && !(mc.currentScreen instanceof CosmeticsScreen)) return;
 
             float age = entity.age + tickDelta;
             VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
@@ -1012,15 +1024,6 @@ public class VisualModClient implements ClientModInitializer {
             registerSetting(radius);
             registerSetting(height);
         }
-
-        public int getColorRgb() {
-            return switch (colorMode.get()) {
-                case "Cyan" -> 0x00FFFF;
-                case "Red" -> 0xFF3333;
-                case "Gold" -> 0xFFD700;
-                default -> 0x6366F1;
-            };
-        }
     }
 
     public static class CrosshairModule extends Module {
@@ -1115,9 +1118,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // 3. REMOVALS МОДУЛИ
-    // ==========================================
     public static class LowFireModule extends Module {
         public final SliderSetting height = new SliderSetting("Высота", 0.30, 0.0, 1.0, 0.05, "%");
 
@@ -1194,9 +1194,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // 4. MOVEMENT & MISC МОДУЛИ
-    // ==========================================
     public static class AutoSprintModule extends Module {
         public AutoSprintModule() {
             super("AutoSprint", "Автоматический непрерывный бег без двойного W", Category.MOVEMENT);
@@ -1402,9 +1399,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // MODULE MANAGER
-    // ==========================================
     public static class ModuleManager {
         private final List<Module> modules = new ArrayList<>();
 
@@ -1472,9 +1466,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // CLICKGUI SCREEN
-    // ==========================================
     public static class ModernRefinedClickGui extends Screen {
         private final ModuleManager moduleManager;
         private final List<GuiColumn> columns = new ArrayList<>();
@@ -1520,6 +1511,16 @@ public class VisualModClient implements ClientModInitializer {
             }
 
             MinecraftClient mc = MinecraftClient.getInstance();
+
+            // Top cosmetics button
+            int cosBtnW = 100;
+            int cosBtnH = 18;
+            int cosBtnX = this.width - cosBtnW - 14;
+            int cosBtnY = 10;
+            boolean cosHover = mouseX >= cosBtnX && mouseX <= cosBtnX + cosBtnW && mouseY >= cosBtnY && mouseY <= cosBtnY + cosBtnH;
+            drawSmoothRect(context, cosBtnX, cosBtnY, cosBtnW, cosBtnH, cosHover ? 0xDD4338CA : 0xDD312E81, 0xFF818CF8);
+            drawStyledText(context, mc.textRenderer, "✦ Косметика", cosBtnX + 16, cosBtnY + 5, 0xFFFFFFFF);
+
             if (!hoveredDescription.isEmpty()) {
                 int textW = mc.textRenderer.getWidth(hoveredDescription);
                 int titleX = (this.width - textW) / 2;
@@ -1558,6 +1559,16 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         private void dispatchClick(int mouseX, int mouseY, int button) {
+            int cosBtnW = 100;
+            int cosBtnH = 18;
+            int cosBtnX = this.width - cosBtnW - 14;
+            int cosBtnY = 10;
+            if (button == 0 && mouseX >= cosBtnX && mouseX <= cosBtnX + cosBtnW && mouseY >= cosBtnY && mouseY <= cosBtnY + cosBtnH) {
+                playClickSound();
+                MinecraftClient.getInstance().setScreen(new CosmeticsScreen(moduleManager));
+                return;
+            }
+
             for (GuiColumn col : columns) {
                 if (col.isMouseOverColumn(mouseX, mouseY)) {
                     if (col.mouseClicked(mouseX, mouseY, button)) {
@@ -1621,6 +1632,241 @@ public class VisualModClient implements ClientModInitializer {
                 context.fill(x + w - 1, y + 1, x + w, y + h - 1, border);
             }
         }
+    }
+
+    public static class CosmeticsScreen extends Screen {
+        private final ModuleManager moduleManager;
+        private final CosmeticsModule cosmeticsModule;
+        private float playerRotation = 0.0f;
+        private boolean isDraggingPlayer = false;
+        private double lastMouseX = 0;
+
+        public CosmeticsScreen(ModuleManager moduleManager) {
+            super(Text.literal("Cosmetics Studio"));
+            this.moduleManager = moduleManager;
+            this.cosmeticsModule = moduleManager.getModule(CosmeticsModule.class);
+        }
+
+        @Override
+        public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+            context.fill(0, 0, this.width, this.height, 0x880A0A0F);
+
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawStyledText(context, mc.textRenderer, "✦ COSMETICS STUDIO", 26, 18, 0xFF818CF8);
+            drawStyledText(context, mc.textRenderer, "§7Управляйте своими клиентскими 3D аксессуарами", 26, 30, 0xFF94A3B8);
+
+            // Left Panel: 3D Player Viewport
+            int viewX = 26;
+            int viewY = 48;
+            int viewW = this.width / 2 - 40;
+            int viewH = this.height - 68;
+
+            ModernRefinedClickGui.drawSmoothRect(context, viewX, viewY, viewW, viewH, 0xDD12111A, 0x44818CF8);
+
+            if (mc.player != null) {
+                int centerX = viewX + viewW / 2;
+                int centerY = viewY + viewH - 24;
+                int size = Math.min(viewH / 3, 75);
+
+                float mouseDeltaX = (float) (centerX - mouseX);
+                float mouseDeltaY = (float) (centerY - 55 - mouseY);
+
+                try {
+                    InventoryScreen.drawEntity(context, centerX, centerY, size, -playerRotation, mouseDeltaY * 0.1f, mc.player);
+                } catch (Throwable ignored) {
+                    try {
+                        InventoryScreen.drawEntity(context, centerX - size, centerY - size * 2, centerX + size, centerY, size, -playerRotation, mouseDeltaX * 0.05f, mouseDeltaY * 0.05f, mc.player);
+                    } catch (Throwable fallback) {
+                        drawStyledText(context, mc.textRenderer, "[3D Preview Active]", centerX - 40, centerY - 40, 0xFF818CF8);
+                    }
+                }
+            }
+            drawStyledText(context, mc.textRenderer, "§8⟳ Зажмите ЛКМ на модели для вращения", viewX + (viewW - 170) / 2, viewY + viewH - 12, 0xFF64748B);
+
+            // Right Panel: Settings Cards
+            int setX = this.width / 2;
+            int setY = 48;
+            int setW = this.width / 2 - 26;
+            int setH = this.height - 68;
+
+            ModernRefinedClickGui.drawSmoothRect(context, setX, setY, setW, setH, 0xDD12111A, 0x22FFFFFF);
+
+            // Global Master Toggle
+            boolean enabled = cosmeticsModule.isEnabled();
+            int toggleBtnX = setX + 16;
+            int toggleBtnY = setY + 14;
+            int toggleBtnW = setW - 32;
+            int toggleBtnH = 22;
+            boolean hoverToggle = mouseX >= toggleBtnX && mouseX <= toggleBtnX + toggleBtnW && mouseY >= toggleBtnY && mouseY <= toggleBtnY + toggleBtnH;
+
+            int toggleBg = enabled ? 0xDD4338CA : (hoverToggle ? 0xDD2A2A38 : 0xDD1E1E28);
+            ModernRefinedClickGui.drawSmoothRect(context, toggleBtnX, toggleBtnY, toggleBtnW, toggleBtnH, toggleBg, enabled ? 0xFF818CF8 : 0x44FFFFFF);
+            drawStyledText(context, mc.textRenderer, enabled ? "✔ Аксессуары: Включены" : "✖ Аксессуары: Отключены", toggleBtnX + 12, toggleBtnY + 7, 0xFFFFFFFF);
+
+            // Setting items render
+            int curY = toggleBtnY + 32;
+            for (Setting<?> s : cosmeticsModule.getSettings()) {
+                drawSettingControl(context, s, setX + 16, curY, setW - 32, mouseX, mouseY);
+                curY += 28;
+            }
+
+            // Back to ClickGUI Button
+            int backBtnW = 100;
+            int backBtnH = 18;
+            int backBtnX = this.width - backBtnW - 26;
+            int backBtnY = 16;
+            boolean backHover = mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH;
+            ModernRefinedClickGui.drawSmoothRect(context, backBtnX, backBtnY, backBtnW, backBtnH, backHover ? 0xDD312E81 : 0xCC1A1A24, 0x44FFFFFF);
+            drawStyledText(context, mc.textRenderer, "← В ClickGUI", backBtnX + 16, backBtnY + 5, 0xFFFFFFFF);
+
+            super.render(context, mouseX, mouseY, delta);
+        }
+
+        private void drawSettingControl(DrawContext context, Setting<?> s, int x, int y, int w, int mouseX, int mouseY) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawStyledText(context, mc.textRenderer, s.getName(), x, y + 2, 0xFFE2E8F0);
+
+            if (s instanceof ModeSetting mode) {
+                int btnW = 90;
+                int btnH = 16;
+                int btnX = x + w - btnW;
+                int btnY = y;
+                boolean hov = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
+                ModernRefinedClickGui.drawSmoothRect(context, btnX, btnY, btnW, btnH, hov ? 0xEE2D2B3D : 0xEE1E1C2B, 0x44818CF8);
+                String val = mode.get();
+                int valW = mc.textRenderer.getWidth(val);
+                drawStyledText(context, mc.textRenderer, val, btnX + (btnW - valW) / 2, btnY + 4, 0xFF818CF8);
+            } else if (s instanceof BooleanSetting bool) {
+                int btnW = 42;
+                int btnH = 16;
+                int btnX = x + w - btnW;
+                int btnY = y;
+                int bg = bool.get() ? 0xFF6366F1 : 0xFF2A2A3C;
+                ModernRefinedClickGui.drawSmoothRect(context, btnX, btnY, btnW, btnH, bg, 0x44FFFFFF);
+                String state = bool.get() ? "ВКЛ" : "ВЫКЛ";
+                int sW = mc.textRenderer.getWidth(state);
+                drawStyledText(context, mc.textRenderer, state, btnX + (btnW - sW) / 2, btnY + 4, 0xFFFFFFFF);
+            } else if (s instanceof SliderSetting slider) {
+                int barW = 100;
+                int barH = 12;
+                int barX = x + w - barW;
+                int barY = y + 2;
+
+                context.fill(barX, barY, barX + barW, barY + barH, 0xFF1D1B28);
+                double pct = (slider.get() - slider.getMin()) / (slider.getMax() - slider.getMin());
+                int fillW = (int) (barW * MathHelper.clamp(pct, 0.0, 1.0));
+                context.fill(barX, barY, barX + fillW, barY + barH, 0xFF6366F1);
+
+                String vStr = String.format("%.2f%s", slider.get(), slider.getSuffix());
+                int vW = mc.textRenderer.getWidth(vStr);
+                drawStyledText(context, mc.textRenderer, vStr, barX + (barW - vW) / 2, barY + 2, 0xFFFFFFFF);
+            }
+        }
+
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            int viewX = 26;
+            int viewY = 48;
+            int viewW = this.width / 2 - 40;
+            int viewH = this.height - 68;
+
+            if (mouseX >= viewX && mouseX <= viewX + viewW && mouseY >= viewY && mouseY <= viewY + viewH) {
+                isDraggingPlayer = true;
+                lastMouseX = mouseX;
+                return true;
+            }
+
+            int backBtnW = 100;
+            int backBtnH = 18;
+            int backBtnX = this.width - backBtnW - 26;
+            int backBtnY = 16;
+            if (mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH) {
+                ModernRefinedClickGui.playClickSound();
+                MinecraftClient.getInstance().setScreen(new ModernRefinedClickGui(moduleManager));
+                return true;
+            }
+
+            int setX = this.width / 2;
+            int setY = 48;
+            int setW = this.width / 2 - 26;
+
+            int toggleBtnX = setX + 16;
+            int toggleBtnY = setY + 14;
+            int toggleBtnW = setW - 32;
+            int toggleBtnH = 22;
+
+            if (mouseX >= toggleBtnX && mouseX <= toggleBtnX + toggleBtnW && mouseY >= toggleBtnY && mouseY <= toggleBtnY + toggleBtnH) {
+                cosmeticsModule.toggle();
+                ModernRefinedClickGui.playClickSound();
+                return true;
+            }
+
+            int curY = toggleBtnY + 32;
+            for (Setting<?> s : cosmeticsModule.getSettings()) {
+                int itemX = setX + 16;
+                int itemW = setW - 32;
+                if (s instanceof ModeSetting mode) {
+                    int btnW = 90;
+                    int btnH = 16;
+                    int btnX = itemX + itemW - btnW;
+                    if (mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= curY && mouseY <= curY + btnH) {
+                        mode.cycle();
+                        ModernRefinedClickGui.playClickSound();
+                        return true;
+                    }
+                } else if (s instanceof BooleanSetting bool) {
+                    int btnW = 42;
+                    int btnH = 16;
+                    int btnX = itemX + itemW - btnW;
+                    if (mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= curY && mouseY <= curY + btnH) {
+                        bool.toggle();
+                        ModernRefinedClickGui.playClickSound();
+                        return true;
+                    }
+                } else if (s instanceof SliderSetting slider) {
+                    int barW = 100;
+                    int barH = 12;
+                    int barX = itemX + itemW - barW;
+                    if (mouseX >= barX && mouseX <= barX + barW && mouseY >= curY && mouseY <= curY + barH) {
+                        double pct = (mouseX - barX) / (double) barW;
+                        double val = slider.getMin() + (slider.getMax() - slider.getMin()) * pct;
+                        slider.setValueClamped(val);
+                        return true;
+                    }
+                }
+                curY += 28;
+            }
+
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+
+        @Override
+        public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            isDraggingPlayer = false;
+            return super.mouseReleased(mouseX, mouseY, button);
+        }
+
+        @Override
+        public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+            if (isDraggingPlayer) {
+                playerRotation += (float) (mouseX - lastMouseX) * 1.4f;
+                lastMouseX = mouseX;
+                return true;
+            }
+            return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_RIGHT_SHIFT) {
+                this.close();
+                return true;
+            }
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        @Override
+        public boolean shouldPause() { return false; }
     }
 
     public static class GuiColumn {
