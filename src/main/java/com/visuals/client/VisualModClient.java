@@ -9,7 +9,6 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.sound.PositionedSoundInstance;
@@ -25,6 +24,7 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
@@ -56,7 +56,7 @@ public void onInitializeClient() {
     clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
     moduleManager.init();
 
-    // Кастомный прицел в HUD (Crosshair)
+    // Кастомный прицел в HUD
     HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null || mc.player == null || mc.options.hudHidden) return;
@@ -82,7 +82,7 @@ public void onInitializeClient() {
             }
             wasInsertKeyDown = isDown;
 
-            // Бинды модулей в игре (только вне открытых экранов и чата)
+            // Бинды модулей в игре
             if (client.currentScreen == null) {
                 for (Module m : moduleManager.getAllModules()) {
                     int bind = m.getKeyBind();
@@ -126,7 +126,7 @@ private KeyBinding registerKeyBindingSafely(String translationKey, int defaultKe
                 }
             }
         } catch (Throwable fallback) {
-            System.out.println("[VisualMod] Using direct GLFW key polling.");
+            System.out.println("[VisualMod] Direct GLFW polling active.");
         }
     }
     return null;
@@ -371,7 +371,146 @@ public static abstract class Module {
 }
 
 // ==========================================
-// 1. RENDER МОДУЛИ
+// 1. COMBAT МОДУЛИ
+// ==========================================
+public static class TriggerBotModule extends Module {
+    public final SliderSetting cooldown = new SliderSetting("Кулдаун", 0.95, 0.70, 1.0, 0.02, "%");
+    public final BooleanSetting critOnly = new BooleanSetting("Только криты", false);
+
+    public TriggerBotModule() {
+        super("TriggerBot", "Автоматический удар при наведении на цель (с проверкой критов)", Category.COMBAT);
+        registerSetting(cooldown);
+        registerSetting(critOnly);
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!isEnabled() || client.player == null || client.interactionManager == null) return;
+        if (client.player.getAttackCooldownProgress(0.0f) < cooldown.get().floatValue()) return;
+
+        if (critOnly.get() && !isPlayerReadyForCrit(client)) return;
+
+        Entity target = findTarget(client);
+        if (target instanceof LivingEntity living && living.isAlive() && target != client.player) {
+            client.interactionManager.attackEntity(client.player, target);
+            client.player.swingHand(Hand.MAIN_HAND);
+        }
+    }
+
+    private boolean isPlayerReadyForCrit(MinecraftClient client) {
+        if (client.player == null) return false;
+        return client.player.fallDistance > 0.0f
+                && !client.player.isOnGround()
+                && !client.player.isClimbing()
+                && !client.player.isTouchingWater()
+                && !client.player.hasStatusEffect(StatusEffects.BLINDNESS)
+                && !client.player.hasVehicle()
+                && !client.player.isSprinting();
+    }
+
+    private Entity findTarget(MinecraftClient client) {
+        if (client.crosshairTarget instanceof EntityHitResult entityHit) {
+            return entityHit.getEntity();
+        }
+
+        HitBoxesModule hb = VisualModClient.INSTANCE.getModuleManager().getModule(HitBoxesModule.class);
+        float expand = (hb != null && hb.isEnabled()) ? hb.getExpansion() : 0.0f;
+        if (expand > 0.0f && client.world != null) {
+            Vec3d cameraPos = client.player.getCameraPosVec(1.0f);
+            Vec3d rot = client.player.getRotationVec(1.0f);
+            Vec3d reach = cameraPos.add(rot.multiply(3.8));
+
+            for (Entity e : client.world.getEntities()) {
+                if (e instanceof LivingEntity living && living != client.player && living.isAlive()) {
+                    Box box = living.getBoundingBox().expand(expand);
+                    if (box.raycast(cameraPos, reach).isPresent()) {
+                        return living;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+}
+
+public static class HitBoxesModule extends Module {
+    public final SliderSetting expand = new SliderSetting("Расширение", 0.35, 0.05, 1.50, 0.05, "m");
+
+    public HitBoxesModule() {
+        super("HitBoxes", "Увеличивает объем хитбоксов целей для уверенного попадания", Category.COMBAT);
+        registerSetting(expand);
+    }
+
+    public float getExpansion() {
+        return isEnabled() ? expand.get().floatValue() : 0.0f;
+    }
+}
+
+public static class TapeMouseModule extends Module {
+    public final SliderSetting minCps = new SliderSetting("Мин. CPS", 10.0, 4.0, 20.0, 1.0, "");
+    public final SliderSetting maxCps = new SliderSetting("Макс. CPS", 14.0, 6.0, 25.0, 1.0, "");
+
+    private long lastClickTime = 0;
+    private long currentDelayMs = 80;
+    private final Random random = new Random();
+
+    public TapeMouseModule() {
+        super("TapeMouse", "Эмуляция зажатия мыши с реалистичным разбросом CPS", Category.COMBAT);
+        registerSetting(minCps);
+        registerSetting(maxCps);
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!isEnabled() || client.player == null || client.interactionManager == null) return;
+        if (client.currentScreen != null) return;
+
+        long window = client.getWindow().getHandle();
+        boolean isAttackDown = client.options.attackKey.isPressed() || GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+
+        if (isAttackDown) {
+            long now = System.currentTimeMillis();
+            if (now - lastClickTime >= currentDelayMs) {
+                lastClickTime = now;
+
+                double min = Math.min(minCps.get(), maxCps.get());
+                double max = Math.max(minCps.get(), maxCps.get());
+                double targetCps = min + (max - min) * random.nextDouble();
+                currentDelayMs = (long) (1000.0 / Math.max(1.0, targetCps));
+
+                if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() != null) {
+                    client.interactionManager.attackEntity(client.player, eHit.getEntity());
+                }
+                client.player.swingHand(Hand.MAIN_HAND);
+            }
+        }
+    }
+}
+
+public static class VelocityModule extends Module {
+    public final SliderSetting horizontal = new SliderSetting("По горизонтали", 0.0, 0.0, 1.0, 0.05, "%");
+    public final SliderSetting vertical = new SliderSetting("По вертикали", 0.0, 0.0, 1.0, 0.05, "%");
+
+    public VelocityModule() {
+        super("Velocity", "Снижает или полностью убирает отдачу от ударов и стрел", Category.COMBAT);
+        registerSetting(horizontal);
+        registerSetting(vertical);
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!isEnabled() || client.player == null) return;
+        if (client.player.hurtTime == 9) {
+            double h = horizontal.get();
+            double v = vertical.get();
+            Vec3d vel = client.player.getVelocity();
+            client.player.setVelocity(vel.x * h, vel.y * v, vel.z * h);
+        }
+    }
+}
+
+// ==========================================
+// 2. RENDER МОДУЛИ
 // ==========================================
 public static class AspectRatioModule extends Module {
     public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "Custom"));
@@ -392,6 +531,92 @@ public static class AspectRatioModule extends Module {
             case "1:1" -> 1.0f;
             case "21:9" -> 21.0f / 9.0f;
             default -> customRatio.get().floatValue();
+        };
+    }
+}
+
+public static class AmbienceModule extends Module {
+    public final ModeSetting timeMode = new ModeSetting("Время", "Sunset", List.of("Day", "Noon", "Sunset", "Night", "Midnight", "Cycle", "Custom"));
+    public final SliderSetting customTime = new SliderSetting("Кастомное время", 13000, 0, 24000, 500, "t");
+    public final SliderSetting cycleSpeed = new SliderSetting("Скорость цикла", 30, 5, 200, 5, "x");
+    public final BooleanSetting clearWeather = new BooleanSetting("Ясная погода", true);
+    private long cycleTicks = 0;
+
+    public AmbienceModule() {
+        super("Ambience", "Кастомное визуальное время суток, чистое небо и атмосфера", Category.RENDER);
+        registerSetting(timeMode);
+        registerSetting(customTime);
+        registerSetting(cycleSpeed);
+        registerSetting(clearWeather);
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!isEnabled() || client.world == null) return;
+
+        long targetTime = switch (timeMode.get()) {
+            case "Day" -> 1000L;
+            case "Noon" -> 6000L;
+            case "Sunset" -> 12800L;
+            case "Night" -> 18000L;
+            case "Midnight" -> 22000L;
+            case "Cycle" -> {
+                cycleTicks = (cycleTicks + cycleSpeed.get().longValue()) % 24000;
+                yield cycleTicks;
+            }
+            default -> customTime.get().longValue();
+        };
+
+        safeSetWorldTime(client.world, targetTime);
+
+        if (clearWeather.get()) {
+            try {
+                client.world.setRainGradient(0.0f);
+                client.world.setThunderGradient(0.0f);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private void safeSetWorldTime(Object world, long time) {
+        try {
+            for (Method m : world.getClass().getMethods()) {
+                if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == long.class && m.getName().toLowerCase().contains("time")) {
+                    m.setAccessible(true);
+                    m.invoke(world, time);
+                }
+            }
+            Method getProps = world.getClass().getMethod("getLevelProperties");
+            Object props = getProps.invoke(world);
+            if (props != null) {
+                for (Method pm : props.getClass().getMethods()) {
+                    if (pm.getParameterCount() == 1 && pm.getParameterTypes()[0] == long.class && pm.getName().toLowerCase().contains("time")) {
+                        pm.setAccessible(true);
+                        pm.invoke(props, time);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+}
+
+public static class ChinaHatModule extends Module {
+    public final ModeSetting colorMode = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Cyan", "Red", "Gold"));
+    public final SliderSetting radius = new SliderSetting("Радиус", 0.65, 0.3, 1.2, 0.05, "m");
+    public final SliderSetting height = new SliderSetting("Высота", 0.28, 0.1, 0.6, 0.02, "m");
+
+    public ChinaHatModule() {
+        super("ChinaHat", "Азиатская коническая шляпа над головой игрока", Category.RENDER);
+        registerSetting(colorMode);
+        registerSetting(radius);
+        registerSetting(height);
+    }
+
+    public int getColorRgb() {
+        return switch (colorMode.get()) {
+            case "Cyan" -> 0x00FFFF;
+            case "Red" -> 0xFF3333;
+            case "Gold" -> 0xFFD700;
+            default -> 0x6366F1;
         };
     }
 }
@@ -456,9 +681,7 @@ public static class ZoomModule extends Module {
         registerSetting(zoomFactor);
     }
 
-    public static double getZoomLevel() {
-        return currentZoom;
-    }
+    public static double getZoomLevel() { return currentZoom; }
 
     @Override
     public void onTick(MinecraftClient client) {
@@ -467,9 +690,7 @@ public static class ZoomModule extends Module {
     }
 
     @Override
-    public void onDisable() {
-        currentZoom = 1.0;
-    }
+    public void onDisable() { currentZoom = 1.0; }
 }
 
 public static class FullBrightModule extends Module {
@@ -496,88 +717,8 @@ public static class FullBrightModule extends Module {
     }
 }
 
-public static class ChinaHatModule extends Module {
-    public final ModeSetting colorMode = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Cyan", "Red", "Gold"));
-    public final SliderSetting radius = new SliderSetting("Радиус", 0.65, 0.3, 1.2, 0.05, "m");
-    public final SliderSetting height = new SliderSetting("Высота", 0.28, 0.1, 0.6, 0.02, "m");
-
-    public ChinaHatModule() {
-        super("ChinaHat", "Азиатская коническая шляпа над головой игрока", Category.RENDER);
-        registerSetting(colorMode);
-        registerSetting(radius);
-        registerSetting(height);
-    }
-
-    public int getColorRgb() {
-        return switch (colorMode.get()) {
-            case "Cyan" -> 0x00FFFF;
-            case "Red" -> 0xFF3333;
-            case "Gold" -> 0xFFD700;
-            default -> 0x6366F1;
-        };
-    }
-}
-
-public static class AmbienceModule extends Module {
-    public final ModeSetting timeMode = new ModeSetting("Время", "Sunset", List.of("Day", "Noon", "Sunset", "Night", "Midnight", "Cycle", "Custom"));
-    public final SliderSetting customTime = new SliderSetting("Кастомное время", 13000, 0, 24000, 500, "t");
-    public final SliderSetting cycleSpeed = new SliderSetting("Скорость цикла", 30, 5, 200, 5, "x");
-    public final BooleanSetting clearWeather = new BooleanSetting("Ясная погода", true);
-    private long cycleTicks = 0;
-
-    public AmbienceModule() {
-        super("Ambience", "Кастомное визуальное время суток, чистое небо и атмосфера", Category.RENDER);
-        registerSetting(timeMode);
-        registerSetting(customTime);
-        registerSetting(cycleSpeed);
-        registerSetting(clearWeather);
-    }
-
-    @Override
-    public void onTick(MinecraftClient client) {
-        if (!isEnabled() || client.world == null) return;
-
-        long targetTime = switch (timeMode.get()) {
-            case "Day" -> 1000L;
-            case "Noon" -> 6000L;
-            case "Sunset" -> 12800L;
-            case "Night" -> 18000L;
-            case "Midnight" -> 22000L;
-            case "Cycle" -> {
-                cycleTicks = (cycleTicks + cycleSpeed.get().longValue()) % 24000;
-                yield cycleTicks;
-            }
-            default -> customTime.get().longValue();
-        };
-
-        safeSetWorldTime(client.world, targetTime);
-
-        if (clearWeather.get()) {
-            try {
-                client.world.setRainGradient(0.0f);
-                client.world.setThunderGradient(0.0f);
-            } catch (Throwable ignored) {}
-        }
-    }
-
-    private void safeSetWorldTime(Object world, long time) {
-        try {
-            for (Method m : world.getClass().getMethods()) {
-                if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == long.class) {
-                    String n = m.getName().toLowerCase();
-                    if (n.contains("time") || n.startsWith("method_")) {
-                        m.setAccessible(true);
-                        m.invoke(world, time);
-                        return;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {}
-    }
-}
-
 // ==========================================
-// 2. REMOVALS МОДУЛИ
+// 3. REMOVALS МОДУЛИ
 // ==========================================
 public static class LowFireModule extends Module {
     public final SliderSetting height = new SliderSetting("Высота", 0.30, 0.0, 1.0, 0.05, "%");
@@ -602,6 +743,24 @@ public static class LowShieldModule extends Module {
 public static class NoHurtCamModule extends Module {
     public NoHurtCamModule() {
         super("NoHurtCam", "Отключает дезориентирующую тряску экрана при получении ударов", Category.REMOVALS);
+    }
+
+    @Override
+    public void onTick(MinecraftClient client) {
+        if (!isEnabled() || client.options == null) return;
+        try {
+            client.options.getDamageTiltStrength().setValue(0.0);
+        } catch (Throwable ignored) {}
+    }
+
+    @Override
+    public void onDisable() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.options != null) {
+            try {
+                mc.options.getDamageTiltStrength().setValue(1.0);
+            } catch (Throwable ignored) {}
+        }
     }
 }
 
@@ -638,99 +797,7 @@ public static class NoRenderModule extends Module {
 }
 
 // ==========================================
-// 3. COMBAT МОДУЛИ
-// ==========================================
-public static class HitBoxesModule extends Module {
-    public final SliderSetting expand = new SliderSetting("Расширение", 0.35, 0.05, 1.50, 0.05, "m");
-
-    public HitBoxesModule() {
-        super("HitBoxes", "Увеличивает объем хитбоксов целей для уверенного попадания", Category.COMBAT);
-        registerSetting(expand);
-    }
-
-    public float getExpansion() {
-        return isEnabled() ? expand.get().floatValue() : 0.0f;
-    }
-}
-
-public static class TriggerBotModule extends Module {
-    public final SliderSetting cooldown = new SliderSetting("Кулдаун атаки", 0.95, 0.70, 1.0, 0.02, "%");
-
-    public TriggerBotModule() {
-        super("TriggerBot", "Автоматический удар при наведении перекрестия на врага", Category.COMBAT);
-        registerSetting(cooldown);
-    }
-
-    @Override
-    public void onTick(MinecraftClient client) {
-        if (!isEnabled() || client.player == null || client.interactionManager == null) return;
-        if (client.player.getAttackCooldownProgress(0.0f) < cooldown.get().floatValue()) return;
-
-        HitResult hit = client.crosshairTarget;
-        if (hit instanceof EntityHitResult entityHit) {
-            Entity target = entityHit.getEntity();
-            if (target instanceof LivingEntity living && living.isAlive() && target != client.player) {
-                client.interactionManager.attackEntity(client.player, target);
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-    }
-}
-
-public static class TapeMouseModule extends Module {
-    public final SliderSetting minCps = new SliderSetting("Мин. CPS", 10.0, 4.0, 20.0, 1.0, "");
-    public final SliderSetting maxCps = new SliderSetting("Макс. CPS", 14.0, 6.0, 25.0, 1.0, "");
-
-    private long lastClickTime = 0;
-    private long currentDelayMs = 80;
-    private final Random random = new Random();
-
-    public TapeMouseModule() {
-        super("TapeMouse", "Эмуляция зажатия мыши с реалистичным разбросом CPS", Category.COMBAT);
-        registerSetting(minCps);
-        registerSetting(maxCps);
-    }
-
-    @Override
-    public void onTick(MinecraftClient client) {
-        if (!isEnabled() || client.player == null || client.interactionManager == null) return;
-        if (client.currentScreen != null) return;
-
-        long window = client.getWindow().getHandle();
-        boolean isLeftDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
-
-        if (isLeftDown) {
-            long now = System.currentTimeMillis();
-            if (now - lastClickTime >= currentDelayMs) {
-                lastClickTime = now;
-
-                double min = Math.min(minCps.get(), maxCps.get());
-                double max = Math.max(minCps.get(), maxCps.get());
-                double targetCps = min + (max - min) * random.nextDouble();
-                currentDelayMs = (long) (1000.0 / Math.max(1.0, targetCps));
-
-                if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() != null) {
-                    client.interactionManager.attackEntity(client.player, eHit.getEntity());
-                }
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-    }
-}
-
-public static class VelocityModule extends Module {
-    public final SliderSetting horizontal = new SliderSetting("По горизонтали", 0.0, 0.0, 1.0, 0.05, "%");
-    public final SliderSetting vertical = new SliderSetting("По вертикали", 0.0, 0.0, 1.0, 0.05, "%");
-
-    public VelocityModule() {
-        super("Velocity", "Снижает или полностью убирает отдачу от ударов и стрел", Category.COMBAT);
-        registerSetting(horizontal);
-        registerSetting(vertical);
-    }
-}
-
-// ==========================================
-// 4. MOVEMENT & MISC МОДУЛИ (ПОЛНОСТЬЮ РАБОЧИЕ)
+// 4. MOVEMENT & MISC МОДУЛИ
 // ==========================================
 public static class AutoSprintModule extends Module {
     public AutoSprintModule() {
@@ -759,7 +826,6 @@ public static class FastBreakModule extends Module {
     public void onTick(MinecraftClient client) {
         if (!isEnabled() || client.interactionManager == null) return;
         try {
-            // Сброс задержки между ударами по блоку
             for (Field f : ClientPlayerInteractionManager.class.getDeclaredFields()) {
                 if (f.getType() == int.class && (f.getName().equals("blockBreakingCooldown") || f.getName().equals("field_3716"))) {
                     f.setAccessible(true);
@@ -778,7 +844,6 @@ public static class InventoryMoveModule extends Module {
     @Override
     public void onTick(MinecraftClient client) {
         if (!isEnabled() || client.currentScreen == null || client.player == null) return;
-        // Не перехватываем, если открыт чат для ввода текста
         if (client.currentScreen instanceof ChatScreen) return;
 
         long window = client.getWindow().getHandle();
@@ -870,8 +935,9 @@ public static class AutoToolModule extends Module {
 
 public static class FreeCameraModule extends Module {
     public final SliderSetting speed = new SliderSetting("Скорость полета", 1.2, 0.5, 4.0, 0.1, "x");
-    private Vec3d originalPos = null;
-    private float originalYaw, originalPitch;
+    private double origX, origY, origZ;
+    private float origYaw, origPitch;
+    private boolean active = false;
 
     public FreeCameraModule() {
         super("FreeCamera", "Свободный полет камерой без перемещения хитбокса на сервере", Category.MISC);
@@ -882,16 +948,19 @@ public static class FreeCameraModule extends Module {
     public void onEnable() {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player != null) {
-            originalPos = mc.player.getPos();
-            originalYaw = mc.player.getYaw();
-            originalPitch = mc.player.getPitch();
+            origX = mc.player.getX();
+            origY = mc.player.getY();
+            origZ = mc.player.getZ();
+            origYaw = mc.player.getYaw();
+            origPitch = mc.player.getPitch();
             mc.player.noClip = true;
+            active = true;
         }
     }
 
     @Override
     public void onTick(MinecraftClient client) {
-        if (!isEnabled() || client.player == null) return;
+        if (!isEnabled() || client.player == null || !active) return;
         client.player.noClip = true;
         client.player.setVelocity(0, 0, 0);
 
@@ -924,12 +993,13 @@ public static class FreeCameraModule extends Module {
     @Override
     public void onDisable() {
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.player != null && originalPos != null) {
-            mc.player.setPosition(originalPos);
-            mc.player.setYaw(originalYaw);
-            mc.player.setPitch(originalPitch);
+        if (mc.player != null && active) {
+            mc.player.setPosition(origX, origY, origZ);
+            mc.player.setYaw(origYaw);
+            mc.player.setPitch(origPitch);
             mc.player.noClip = false;
             mc.player.setVelocity(0, 0, 0);
+            active = false;
         }
     }
 }
