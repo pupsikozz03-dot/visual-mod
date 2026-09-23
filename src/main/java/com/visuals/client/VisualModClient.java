@@ -15,6 +15,7 @@ import org.lwjgl.glfw.GLFW;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,11 @@ import java.util.List;
 public class VisualModClient implements ClientModInitializer {
     public static final String MOD_ID = "visuals_mod";
     public static VisualModClient INSTANCE;
+
+    // Кэш рефлексии для безопасной отрисовки текста на 1.21.0 - 1.21.11+
+    private static Method cachedDrawTextString = null;
+    private static Method cachedDrawTextText = null;
+    private static boolean textRendererInitialized = false;
 
     private KeyBinding clickGuiKey;
     private final ModuleManager moduleManager = new ModuleManager();
@@ -127,6 +133,52 @@ public class VisualModClient implements ClientModInitializer {
 
     public ModuleManager getModuleManager() {
         return moduleManager;
+    }
+
+    /**
+     * Безопасная отрисовка текста, совместимая со всеми версиями 1.21.x.
+     * В 1.21.11 метод DrawContext.drawText изменил возвращаемое значение с int на void,
+     * что вызывает NoSuchMethodError при прямом вызове. Динамический вызов решает проблему.
+     */
+    public static void drawTextSafe(DrawContext context, Object textRenderer, String text, int x, int y, int color, boolean shadow) {
+        if (!textRendererInitialized) {
+            initDrawTextMethods();
+        }
+
+        if (cachedDrawTextString != null) {
+            try {
+                cachedDrawTextString.invoke(context, textRenderer, text, x, y, color, shadow);
+                return;
+            } catch (Throwable ignored) {}
+        }
+
+        if (cachedDrawTextText != null) {
+            try {
+                cachedDrawTextText.invoke(context, textRenderer, Text.literal(text), x, y, color, shadow);
+                return;
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    private static void initDrawTextMethods() {
+        textRendererInitialized = true;
+        try {
+            for (Method m : DrawContext.class.getMethods()) {
+                Class<?>[] params = m.getParameterTypes();
+                // Сигнатура: (TextRenderer, String/Text, int, int, int, boolean)
+                if (params.length == 6 && params[2] == int.class && params[3] == int.class && params[4] == int.class && params[5] == boolean.class) {
+                    if (params[1] == String.class && cachedDrawTextString == null) {
+                        m.setAccessible(true);
+                        cachedDrawTextString = m;
+                    } else if (params[1] == Text.class && cachedDrawTextText == null) {
+                        m.setAccessible(true);
+                        cachedDrawTextText = m;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            System.out.println("[VisualsMod] Failed to resolve drawText safely: " + t.getMessage());
+        }
     }
 
     public enum Category {
@@ -482,7 +534,7 @@ public class VisualModClient implements ClientModInitializer {
             context.fill(x, y + headerHeight - 1, x + width, y + headerHeight, 0xFF6366F1);
 
             MinecraftClient mc = MinecraftClient.getInstance();
-            context.drawText(mc.textRenderer, title, x + 6, y + 4, 0xFFFFFFFF, false);
+            drawTextSafe(context, mc.textRenderer, title, x + 6, y + 4, 0xFFFFFFFF, false);
 
             int offsetY = y + headerHeight;
             for (ModuleButton btn : buttons) {
@@ -592,10 +644,10 @@ public class VisualModClient implements ClientModInitializer {
             context.fill(x + 2, y + 1, x + width - 2, y + 15, bgColor);
 
             int textColor = module.isEnabled() ? 0xFFFFFFFF : 0xFFA0A0AB;
-            context.drawText(mc.textRenderer, module.getName(), x + 6, y + 4, textColor, false);
+            drawTextSafe(context, mc.textRenderer, module.getName(), x + 6, y + 4, textColor, false);
 
             if (!module.getSettings().isEmpty()) {
-                context.drawText(mc.textRenderer, expanded ? "-" : "+", x + width - 12, y + 4, 0xFF888899, false);
+                drawTextSafe(context, mc.textRenderer, expanded ? "-" : "+", x + width - 12, y + 4, 0xFF888899, false);
             }
 
             if (expanded) {
@@ -665,7 +717,7 @@ public class VisualModClient implements ClientModInitializer {
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
             context.fill(x, y, x + width, y + 13, 0xFF141419);
-            context.drawText(mc.textRenderer, setting.getName(), x + 4, y + 3, 0xFFCCCCCC, false);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 4, y + 3, 0xFFCCCCCC, false);
 
             int checkColor = setting.get() ? 0xFF22C55E : 0xFFEF4444;
             context.fill(x + width - 14, y + 2, x + width - 4, y + 12, checkColor);
@@ -709,7 +761,7 @@ public class VisualModClient implements ClientModInitializer {
             context.fill(x + fillWidth, y + 12, x + width, y + 15, 0xFF2E2E38);
 
             String text = String.format("%s: %.2f", setting.getName(), setting.get());
-            context.drawText(mc.textRenderer, text, x + 4, y + 2, 0xFFDDDDDD, false);
+            drawTextSafe(context, mc.textRenderer, text, x + 4, y + 2, 0xFFDDDDDD, false);
         }
 
         @Override
@@ -757,7 +809,7 @@ public class VisualModClient implements ClientModInitializer {
             context.fill(x, y, x + width, y + 14, 0xFF141419);
 
             String text = setting.getName() + ": " + setting.get();
-            context.drawText(mc.textRenderer, text, x + 4, y + 3, 0xFF93C5FD, false);
+            drawTextSafe(context, mc.textRenderer, text, x + 4, y + 3, 0xFF93C5FD, false);
         }
 
         @Override
