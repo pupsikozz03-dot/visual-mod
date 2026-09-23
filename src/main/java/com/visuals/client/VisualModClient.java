@@ -9,6 +9,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.sound.PositionedSoundInstance;
@@ -20,9 +21,9 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
@@ -36,6 +37,8 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class VisualModClient implements ClientModInitializer {
 public static final String MOD_ID = "visuals_mod";
@@ -50,19 +53,30 @@ private final ModuleManager moduleManager = new ModuleManager();
 private boolean wasInsertKeyDown = false;
 private final boolean[] keyStates = new boolean[512];
 
+// Текущая цель для TargetHUD
+public static LivingEntity currentCombatTarget = null;
+
 @Override
 public void onInitializeClient() {
     INSTANCE = this;
     clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
     moduleManager.init();
 
-    // Кастомный прицел в HUD
+    // Рендер Crosshair и TargetHUD
     HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null || mc.player == null || mc.options.hudHidden) return;
+
+        // Кастомный прицел
         CrosshairModule ch = moduleManager.getModule(CrosshairModule.class);
         if (ch != null && ch.isEnabled()) {
             ch.renderCrosshair(drawContext, mc.getWindow().getScaledWidth(), mc.getWindow().getScaledHeight());
+        }
+
+        // TargetHUD
+        TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
+        if (th != null && th.isEnabled()) {
+            th.render(drawContext, mc);
         }
     });
 
@@ -104,6 +118,15 @@ public void onInitializeClient() {
 
         if (client.world != null && client.player != null) {
             moduleManager.onTick(client);
+
+            // Актуализация цели из прицела, если нет активного боя
+            if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() instanceof LivingEntity living) {
+                if (living.isAlive() && living != client.player) {
+                    currentCombatTarget = living;
+                }
+            } else if (currentCombatTarget != null && (!currentCombatTarget.isAlive() || currentCombatTarget.isRemoved())) {
+                currentCombatTarget = null;
+            }
         }
     });
 }
@@ -378,7 +401,7 @@ public static class TriggerBotModule extends Module {
     public final BooleanSetting critOnly = new BooleanSetting("Только криты", false);
 
     public TriggerBotModule() {
-        super("TriggerBot", "Автоматический удар при наведении на цель (с проверкой критов)", Category.COMBAT);
+        super("TriggerBot", "Автоматический удар при наведении на цель с проверкой критов", Category.COMBAT);
         registerSetting(cooldown);
         registerSetting(critOnly);
     }
@@ -392,6 +415,7 @@ public static class TriggerBotModule extends Module {
 
         Entity target = findTarget(client);
         if (target instanceof LivingEntity living && living.isAlive() && target != client.player) {
+            currentCombatTarget = living;
             client.interactionManager.attackEntity(client.player, target);
             client.player.swingHand(Hand.MAIN_HAND);
         }
@@ -437,7 +461,7 @@ public static class HitBoxesModule extends Module {
     public final SliderSetting expand = new SliderSetting("Расширение", 0.35, 0.05, 1.50, 0.05, "m");
 
     public HitBoxesModule() {
-        super("HitBoxes", "Увеличивает объем хитбоксов целей для уверенного попадания", Category.COMBAT);
+        super("HitBoxes", "Увеличивает объем хитбоксов целей для попадания", Category.COMBAT);
         registerSetting(expand);
     }
 
@@ -480,6 +504,9 @@ public static class TapeMouseModule extends Module {
 
                 if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() != null) {
                     client.interactionManager.attackEntity(client.player, eHit.getEntity());
+                    if (eHit.getEntity() instanceof LivingEntity living) {
+                        currentCombatTarget = living;
+                    }
                 }
                 client.player.swingHand(Hand.MAIN_HAND);
             }
@@ -512,6 +539,156 @@ public static class VelocityModule extends Module {
 // ==========================================
 // 2. RENDER МОДУЛИ
 // ==========================================
+public static class TargetHudModule extends Module {
+    public final SliderSetting xPos = new SliderSetting("Позиция X", 0.52, 0.05, 0.90, 0.01, "");
+    public final SliderSetting yPos = new SliderSetting("Позиция Y", 0.60, 0.05, 0.90, 0.01, "");
+
+    private float currentDisplayHp = 20.0f;
+    private float secondaryHp = 20.0f;
+    private float absorptionDisplay = 0.0f;
+    private float alphaAnim = 0.0f;
+    private float lastHurtTime = 0.0f;
+
+    private final CopyOnWriteArrayList<Particle> particles = new CopyOnWriteArrayList<>();
+
+    public TargetHudModule() {
+        super("TargetHUD", "Информативная плашка цели с плавной полоской HP и эффектами", Category.RENDER);
+        registerSetting(xPos);
+        registerSetting(yPos);
+    }
+
+    public void render(DrawContext context, MinecraftClient mc) {
+        LivingEntity target = currentCombatTarget;
+        boolean preview = (target == null && mc.currentScreen instanceof ModernRefinedClickGui && mc.player != null);
+        if (preview) target = mc.player;
+
+        boolean visible = target != null && target.isAlive();
+        alphaAnim = MathHelper.lerp(0.18f, alphaAnim, visible ? 1.0f : 0.0f);
+        if (alphaAnim < 0.02f) return;
+
+        if (target == null) return;
+
+        int sw = mc.getWindow().getScaledWidth();
+        int sh = mc.getWindow().getScaledHeight();
+        int x = (int) (sw * xPos.get());
+        int y = (int) (sh * yPos.get());
+
+        int w = 120;
+        int h = 40;
+
+        // Анимация здоровья
+        float realHp = target.getHealth();
+        float maxHp = Math.max(1.0f, target.getMaxHealth());
+        float realAbs = target.getAbsorptionAmount();
+
+        currentDisplayHp = MathHelper.lerp(0.15f, currentDisplayHp, realHp);
+        secondaryHp = MathHelper.lerp(0.08f, secondaryHp, realHp);
+        absorptionDisplay = MathHelper.lerp(0.15f, absorptionDisplay, realAbs);
+
+        // Спавн частиц урона
+        if (target.hurtTime > 0 && target.hurtTime > lastHurtTime) {
+            for (int i = 0; i < 4; i++) {
+                particles.add(new Particle(x + 18, y + 18));
+            }
+        }
+        lastHurtTime = target.hurtTime;
+
+        int alpha = (int) (alphaAnim * 255);
+        int bg = (Math.min(alpha, 0xCC) << 24) | 0x14111E;
+        int border = (Math.min(alpha, 0x44) << 24) | 0x818CF8;
+
+        // Фон панели
+        ModernRefinedClickGui.drawSmoothRect(context, x, y, w, h, bg, border);
+
+        // Голова скина / буква
+        int headSize = 30;
+        int headX = x + 5;
+        int headY = y + 5;
+
+        boolean renderedSkin = false;
+        if (target instanceof AbstractClientPlayerEntity player) {
+            try {
+                Identifier skin = player.getSkinTextures().texture();
+                if (skin != null) {
+                    context.drawTexture(skin, headX, headY, headSize, headSize, 8.0f, 8.0f, 8, 8, 64, 64);
+                    context.drawTexture(skin, headX, headY, headSize, headSize, 40.0f, 8.0f, 8, 8, 64, 64);
+                    renderedSkin = true;
+                }
+            } catch (Throwable ignored) {}
+        }
+
+        if (!renderedSkin) {
+            ModernRefinedClickGui.drawSmoothRect(context, headX, headY, headSize, headSize, 0x55333344, 0x33FFFFFF);
+            String letter = target.getName().getString().isEmpty() ? "?" : target.getName().getString().substring(0, 1).toUpperCase();
+            drawTextSafe(context, mc.textRenderer, letter, headX + 11, headY + 10, 0xFFFFFFFF, true);
+        }
+
+        // Имя цели
+        String name = target.getName().getString();
+        if (mc.textRenderer.getWidth(name) > 75) {
+            name = name.substring(0, Math.min(name.length(), 10)) + "..";
+        }
+        drawTextSafe(context, mc.textRenderer, "§f" + name, x + 40, y + 6, 0xFFFFFFFF, false);
+
+        // Значение HP текстом
+        int hpInt = (int) Math.ceil(currentDisplayHp);
+        String hpText = "§7HP: §c" + hpInt + "§7/§f" + (int) maxHp;
+        drawTextSafe(context, mc.textRenderer, hpText, x + 40, y + 17, 0xFFCBD5E1, false);
+
+        // Полоска здоровья
+        int barX = x + 40;
+        int barY = y + 28;
+        int barW = 72;
+        int barH = 5;
+
+        // Задник бара
+        context.fill(barX, barY, barX + barW, barY + barH, 0xFF222230);
+
+        // Вторичный урон (стекающий след)
+        float secPct = MathHelper.clamp(secondaryHp / maxHp, 0.0f, 1.0f);
+        context.fill(barX, barY, barX + (int) (barW * secPct), barY + barH, 0xFFEF4444);
+
+        // Основной бар здоровья
+        float hpPct = MathHelper.clamp(currentDisplayHp / maxHp, 0.0f, 1.0f);
+        context.fill(barX, barY, barX + (int) (barW * hpPct), barY + barH, 0xFF6366F1);
+
+        // Полоска поглощения (золотые сердца)
+        if (absorptionDisplay > 0.1f) {
+            float absPct = MathHelper.clamp(absorptionDisplay / maxHp, 0.0f, 1.0f);
+            context.fill(barX, barY, barX + (int) (barW * absPct), barY + barH, 0xFFFACC15);
+        }
+
+        // Частицы урона
+        particles.removeIf(p -> System.currentTimeMillis() - p.startTime > p.lifetime);
+        for (Particle p : particles) {
+            p.update();
+            float prog = 1.0f - (float) (System.currentTimeMillis() - p.startTime) / (float) p.lifetime;
+            int pColor = (Math.max(10, (int) (prog * 255)) << 24) | 0x818CF8;
+            context.fill((int) p.x - 1, (int) p.y - 1, (int) p.x + 2, (int) p.y + 2, pColor);
+        }
+    }
+
+    public static class Particle {
+        public float x, y, vx, vy;
+        public final long startTime;
+        public final long lifetime;
+
+        public Particle(float originX, float originY) {
+            this.x = originX;
+            this.y = originY;
+            this.vx = ThreadLocalRandom.current().nextFloat(-1.8f, 1.8f);
+            this.vy = ThreadLocalRandom.current().nextFloat(-1.8f, 1.8f);
+            this.startTime = System.currentTimeMillis();
+            this.lifetime = 600L + ThreadLocalRandom.current().nextLong(400L);
+        }
+
+        public void update() {
+            x += vx;
+            y += vy;
+        }
+    }
+}
+
 public static class AspectRatioModule extends Module {
     public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "Custom"));
     public final SliderSetting customRatio = new SliderSetting("Кастомный", 1.33, 0.40, 2.50, 0.05, "");
@@ -583,6 +760,7 @@ public static class AmbienceModule extends Module {
                 if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == long.class && m.getName().toLowerCase().contains("time")) {
                     m.setAccessible(true);
                     m.invoke(world, time);
+                    return;
                 }
             }
             Method getProps = world.getClass().getMethod("getLevelProperties");
@@ -592,6 +770,7 @@ public static class AmbienceModule extends Module {
                     if (pm.getParameterCount() == 1 && pm.getParameterTypes()[0] == long.class && pm.getName().toLowerCase().contains("time")) {
                         pm.setAccessible(true);
                         pm.invoke(props, time);
+                        return;
                     }
                 }
             }
@@ -1024,6 +1203,7 @@ public static class ModuleManager {
         modules.add(new WaterSpeedModule());
 
         // Render
+        modules.add(new TargetHudModule());
         modules.add(new AspectRatioModule());
         modules.add(new AmbienceModule());
         modules.add(new FullBrightModule());
