@@ -146,7 +146,7 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     // ==========================================
-    // КАТЕГОРИИ ИНТЕРФЕЙСА
+    // КАТЕГОРИИ
     // ==========================================
     public enum Category {
         COMBAT("Combat", "⚔"),
@@ -168,7 +168,7 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     // ==========================================
-    // РАСШИРЕННАЯ СИСТЕМА НАСТРОЕК
+    // НАСТРОЙКИ
     // ==========================================
     public static abstract class Setting<T> {
         protected final String name;
@@ -196,10 +196,6 @@ public class VisualModClient implements ClientModInitializer {
         private final double max;
         private final double increment;
         private final String suffix;
-
-        public SliderSetting(String name, double defaultValue, double min, double max, double increment) {
-            this(name, defaultValue, min, max, increment, "");
-        }
 
         public SliderSetting(String name, double defaultValue, double min, double max, double increment, String suffix) {
             super(name, defaultValue);
@@ -281,26 +277,21 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     // ==========================================
-    // МОДУЛИ: RENDER & VISUALS
+    // МОДУЛИ RENDER & VISUALS
     // ==========================================
     public static class AspectRatioModule extends Module {
-        public final ModeSetting presets = new ModeSetting("Aspect Ratio", "16:9", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "3:2", "Custom"));
-        public final SliderSetting customRatio = new SliderSetting("Custom Ratio", 1.77, 0.40, 2.60, 0.05);
-        public final BooleanSetting stretchFov = new BooleanSetting("Stretch FOV", true);
-        public final SliderSetting fovMultiplier = new SliderSetting("FOV Scale", 1.0, 0.5, 1.8, 0.05, "x");
-        public final BooleanSetting handRatio = new BooleanSetting("Aspect Hand", true);
-        public final BooleanSetting smoothTransition = new BooleanSetting("Smooth Transition", true);
-
+        public final ModeSetting presets = new ModeSetting("Соотношение", "16:9", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "3:2", "Custom"));
+        public final SliderSetting customRatio = new SliderSetting("Кастомный Aspect", 1.77, 0.40, 2.60, 0.05, "");
+        public final BooleanSetting stretchFov = new BooleanSetting("Растягивать FOV", true);
+        public final SliderSetting fovScale = new SliderSetting("Множитель угла", 1.0, 0.5, 1.8, 0.05, "x");
         private Integer originalFov = null;
 
         public AspectRatioModule() {
-            super("AspectRatio", "Изменяет соотношение сторон дисплея и горизонтальное растяжение FOV", Category.RENDER);
+            super("AspectRatio", "Изменяет соотношение сторон экрана и угол обзора FOV", Category.RENDER);
             registerSetting(presets);
             registerSetting(customRatio);
             registerSetting(stretchFov);
-            registerSetting(fovMultiplier);
-            registerSetting(handRatio);
-            registerSetting(smoothTransition);
+            registerSetting(fovScale);
         }
 
         public float getRatio() {
@@ -319,16 +310,13 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.options == null) return;
-            if (originalFov == null) {
-                originalFov = client.options.getFov().getValue();
-            }
+            if (originalFov == null) originalFov = client.options.getFov().getValue();
 
             if (stretchFov.get()) {
                 float targetRatio = getRatio();
-                double scale = fovMultiplier.get();
+                double scale = fovScale.get();
                 int fovModifier = (int) (originalFov * (1.77f / targetRatio) * scale);
-                fovModifier = MathHelper.clamp(fovModifier, 30, 130);
-                client.options.getFov().setValue(fovModifier);
+                client.options.getFov().setValue(MathHelper.clamp(fovModifier, 30, 130));
             }
         }
 
@@ -342,25 +330,21 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class AmbienceModule extends Module {
-        public final ModeSetting timeMode = new ModeSetting("Time", "Sunset", List.of("Day", "Noon", "Sunset", "Night", "Midnight", "Cycle", "Custom"));
-        public final SliderSetting customTime = new SliderSetting("Custom Time", 12800, 0, 24000, 500, "t");
-        public final SliderSetting cycleSpeed = new SliderSetting("Cycle Speed", 40, 5, 250, 5);
-        public final BooleanSetting clearWeather = new BooleanSetting("Clear Sky", true);
-        public final BooleanSetting disableThunder = new BooleanSetting("No Thunder", true);
-        public final ModeSetting skyColorMode = new ModeSetting("Sky Color", "Vanilla", List.of("Vanilla", "Purple", "Crimson", "Cyberpunk", "Dark"));
-        public final SliderSetting cloudHeight = new SliderSetting("Cloud Height", 192, 64, 320, 16);
+        public final ModeSetting timeMode = new ModeSetting("Время", "Sunset", List.of("Day", "Noon", "Sunset", "Night", "Midnight", "Cycle", "Custom"));
+        public final SliderSetting customTime = new SliderSetting("Кастомное время", 12800, 0, 24000, 500, "t");
+        public final SliderSetting cycleSpeed = new SliderSetting("Скорость цикла", 30, 5, 200, 5, "x");
+        public final BooleanSetting clearWeather = new BooleanSetting("Ясная погода", true);
+        public final BooleanSetting disableThunder = new BooleanSetting("Без молний", true);
 
         private long cycleTicks = 0;
 
         public AmbienceModule() {
-            super("Ambience", "Кастомное визуальное время суток, чистое небо и атмосферный тон", Category.RENDER);
+            super("Ambience", "Кастомное визуальное время суток, чистое небо и атмосфера", Category.RENDER);
             registerSetting(timeMode);
             registerSetting(customTime);
             registerSetting(cycleSpeed);
             registerSetting(clearWeather);
             registerSetting(disableThunder);
-            registerSetting(skyColorMode);
-            registerSetting(cloudHeight);
         }
 
         @Override
@@ -381,35 +365,24 @@ public class VisualModClient implements ClientModInitializer {
             };
 
             client.world.setTimeOfDay(targetTime);
-
-            if (clearWeather.get()) {
-                client.world.setRainGradient(0.0f);
-            }
-            if (disableThunder.get()) {
-                client.world.setThunderGradient(0.0f);
-            }
+            if (clearWeather.get()) client.world.setRainGradient(0.0f);
+            if (disableThunder.get()) client.world.setThunderGradient(0.0f);
         }
     }
 
     public static class FullBrightModule extends Module {
-        public final SliderSetting gamma = new SliderSetting("Brightness", 12.0, 1.0, 20.0, 1.0);
-        public final ModeSetting brightMode = new ModeSetting("Mode", "Gamma", List.of("Gamma", "NightVision", "Vibrant"));
-        public final BooleanSetting smoothTransition = new BooleanSetting("Smooth Gamma", true);
+        public final SliderSetting gamma = new SliderSetting("Яркость", 12.0, 1.0, 20.0, 1.0, "x");
         private Double previousGamma = null;
 
         public FullBrightModule() {
-            super("FullBright", "Максимальная видимость в пещерах и ночью без необходимости факелов", Category.RENDER);
+            super("FullBright", "Максимальная видимость в пещерах и темных локациях", Category.RENDER);
             registerSetting(gamma);
-            registerSetting(brightMode);
-            registerSetting(smoothTransition);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.options == null) return;
-            if (previousGamma == null) {
-                previousGamma = client.options.getGamma().getValue();
-            }
+            if (previousGamma == null) previousGamma = client.options.getGamma().getValue();
             client.options.getGamma().setValue(gamma.get());
         }
 
@@ -423,26 +396,18 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class ZoomModule extends Module {
-        public final SliderSetting zoomLevel = new SliderSetting("Zoom Power", 3.5, 1.5, 8.0, 0.5, "x");
-        public final BooleanSetting smoothZoom = new BooleanSetting("Smooth Motion", true);
-        public final BooleanSetting cinematicCamera = new BooleanSetting("Cinematic Pan", true);
-        public final BooleanSetting scrollZoom = new BooleanSetting("Mouse Scroll", true);
+        public final SliderSetting zoomLevel = new SliderSetting("Кратность зума", 3.5, 1.5, 8.0, 0.5, "x");
         private Integer baseFov = null;
 
         public ZoomModule() {
-            super("Zoom", "Кинематографическое плавное приближение камеры", Category.RENDER);
+            super("Zoom", "Кинематографическое приближение камеры", Category.RENDER);
             registerSetting(zoomLevel);
-            registerSetting(smoothZoom);
-            registerSetting(cinematicCamera);
-            registerSetting(scrollZoom);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.options == null) return;
-            if (baseFov == null) {
-                baseFov = client.options.getFov().getValue();
-            }
+            if (baseFov == null) baseFov = client.options.getFov().getValue();
             int targetFov = (int) (baseFov / zoomLevel.get());
             client.options.getFov().setValue(MathHelper.clamp(targetFov, 10, 110));
         }
@@ -457,241 +422,179 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class CrosshairModule extends Module {
-        public final ModeSetting style = new ModeSetting("Style", "Classic", List.of("Classic", "Dot", "Circle", "Cross", "T-Cross"));
-        public final SliderSetting gap = new SliderSetting("Center Gap", 3.0, 0.0, 12.0, 1.0, "px");
-        public final SliderSetting length = new SliderSetting("Line Length", 5.0, 1.0, 15.0, 1.0, "px");
-        public final SliderSetting thickness = new SliderSetting("Thickness", 1.5, 1.0, 5.0, 0.5, "px");
-        public final BooleanSetting dynamicSpread = new BooleanSetting("Dynamic Attack", true);
-        public final BooleanSetting rainbow = new BooleanSetting("Rainbow Tint", false);
+        public final ModeSetting style = new ModeSetting("Форма", "Classic", List.of("Classic", "Dot", "Circle", "Cross", "T-Cross"));
+        public final SliderSetting gap = new SliderSetting("Зазор", 3.0, 0.0, 12.0, 1.0, "px");
+        public final SliderSetting length = new SliderSetting("Длина линий", 5.0, 1.0, 15.0, 1.0, "px");
+        public final SliderSetting thickness = new SliderSetting("Толщина", 1.5, 1.0, 5.0, 0.5, "px");
 
         public CrosshairModule() {
-            super("Crosshair", "Кастомный киберспортивный прицел с точной настройкой геометрии", Category.RENDER);
+            super("Crosshair", "Кастомный статический прицел с настройкой размера", Category.RENDER);
             registerSetting(style);
             registerSetting(gap);
             registerSetting(length);
             registerSetting(thickness);
-            registerSetting(dynamicSpread);
-            registerSetting(rainbow);
         }
     }
 
     public static class ChinaHatModule extends Module {
-        public final ModeSetting hatColor = new ModeSetting("Palette", "Indigo", List.of("Indigo", "Rainbow", "Red", "Cyan", "Gold"));
-        public final SliderSetting radius = new SliderSetting("Radius", 0.65, 0.3, 1.2, 0.05);
-        public final SliderSetting height = new SliderSetting("Height", 0.28, 0.1, 0.6, 0.02);
-        public final BooleanSetting firstPerson = new BooleanSetting("Show In 1st Person", false);
+        public final ModeSetting palette = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Rainbow", "Red", "Cyan", "Gold"));
+        public final SliderSetting radius = new SliderSetting("Радиус", 0.65, 0.3, 1.2, 0.05, "m");
+        public final SliderSetting height = new SliderSetting("Высота", 0.28, 0.1, 0.6, 0.02, "m");
 
         public ChinaHatModule() {
-            super("ChinaHat", "Стильная восточная коническая шляпа над головой персонажа", Category.RENDER);
-            registerSetting(hatColor);
+            super("ChinaHat", "Азиатская коническая шляпа над моделью игрока", Category.RENDER);
+            registerSetting(palette);
             registerSetting(radius);
             registerSetting(height);
-            registerSetting(firstPerson);
         }
     }
 
     // ==========================================
-    // МОДУЛИ: REMOVALS (PVP ОЧИСТКА)
+    // МОДУЛИ REMOVALS
     // ==========================================
     public static class NoHurtCamModule extends Module {
-        public final SliderSetting shake = new SliderSetting("Shake Factor", 0.0, 0.0, 1.0, 0.05);
-        public final BooleanSetting removeRedOverlay = new BooleanSetting("No Red Tint", true);
-        public final ModeSetting shakeMode = new ModeSetting("Mode", "Total Off", List.of("Total Off", "Subtle 20%", "Custom"));
+        public final SliderSetting shake = new SliderSetting("Сила тряски", 0.0, 0.0, 1.0, 0.05, "%");
+        public final ModeSetting mode = new ModeSetting("Режим", "Полное отключение", List.of("Полное отключение", "Мягкий 20%", "Свой"));
 
         public NoHurtCamModule() {
-            super("NoHurtCam", "Отключает дезориентирующую тряску экрана и покраснение при ударах", Category.REMOVALS);
+            super("NoHurtCam", "Отключает дезориентирующую тряску экрана при получении ударов", Category.REMOVALS);
             registerSetting(shake);
-            registerSetting(shakeMode);
-            registerSetting(removeRedOverlay);
+            registerSetting(mode);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.options == null) return;
-            double factor = switch (shakeMode.get()) {
-                case "Total Off" -> 0.0;
-                case "Subtle 20%" -> 0.20;
-                default -> shake.get();
-            };
+            double factor = mode.get().equals("Полное отключение") ? 0.0 : (mode.get().equals("Мягкий 20%") ? 0.20 : shake.get());
             client.options.getDamageTiltStrength().setValue(factor);
         }
 
         @Override
         public void onDisable() {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.options != null) {
-                mc.options.getDamageTiltStrength().setValue(1.0);
-            }
+            if (mc.options != null) mc.options.getDamageTiltStrength().setValue(1.0);
         }
     }
 
     public static class LowFireModule extends Module {
-        public final ModeSetting heightMode = new ModeSetting("Height Mode", "Invisible", List.of("Invisible", "Minimal (15%)", "Low (30%)", "Half (50%)", "Custom"));
-        public final SliderSetting customHeight = new SliderSetting("Height Offset", 0.20, 0.0, 1.0, 0.05);
-        public final SliderSetting opacity = new SliderSetting("Opacity", 0.50, 0.0, 1.0, 0.05);
-        public final BooleanSetting blueFire = new BooleanSetting("Soul Fire Blue", false);
+        public final SliderSetting height = new SliderSetting("Смещение пламени", 0.15, 0.0, 1.0, 0.05, "");
+        public final SliderSetting opacity = new SliderSetting("Прозрачность", 0.50, 0.0, 1.0, 0.05, "%");
 
         public LowFireModule() {
-            super("LowFire", "Опускает или скрывает языки пламени при горении от 1 лица", Category.REMOVALS);
-            registerSetting(heightMode);
-            registerSetting(customHeight);
+            super("LowFire", "Опускает языки огня от 1-го лица, освобождая обзор", Category.REMOVALS);
+            registerSetting(height);
             registerSetting(opacity);
-            registerSetting(blueFire);
         }
     }
 
     public static class AntiBlindnessModule extends Module {
-        public final BooleanSetting removeBlindness = new BooleanSetting("Potion Blindness", true);
-        public final BooleanSetting removeDarkness = new BooleanSetting("Warden Darkness", true);
-        public final BooleanSetting removeNausea = new BooleanSetting("Portal Wobble", true);
-        public final BooleanSetting clearLavaFog = new BooleanSetting("Clear Lava Fog", true);
-        public final BooleanSetting clearWaterFog = new BooleanSetting("Clear Water Fog", true);
-        public final BooleanSetting removePumpkin = new BooleanSetting("No Pumpkin Overlay", true);
+        public final BooleanSetting blindness = new BooleanSetting("Слепота зелья", true);
+        public final BooleanSetting darkness = new BooleanSetting("Тьма Вардена", true);
+        public final BooleanSetting nausea = new BooleanSetting("Искажение портала", true);
 
         public AntiBlindnessModule() {
-            super("AntiBlindness", "Очищает экран от ослепления, тьмы Вардена, лавового тумана и тыквы", Category.REMOVALS);
-            registerSetting(removeBlindness);
-            registerSetting(removeDarkness);
-            registerSetting(removeNausea);
-            registerSetting(clearLavaFog);
-            registerSetting(clearWaterFog);
-            registerSetting(removePumpkin);
+            super("AntiBlindness", "Очищает экран от эффектов слепоты, тьмы и укачивания", Category.REMOVALS);
+            registerSetting(blindness);
+            registerSetting(darkness);
+            registerSetting(nausea);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
-            if (removeBlindness.get() && client.player.hasStatusEffect(StatusEffects.BLINDNESS)) {
-                client.player.removeStatusEffect(StatusEffects.BLINDNESS);
-            }
-            if (removeDarkness.get() && client.player.hasStatusEffect(StatusEffects.DARKNESS)) {
-                client.player.removeStatusEffect(StatusEffects.DARKNESS);
-            }
-            if (removeNausea.get() && client.player.hasStatusEffect(StatusEffects.NAUSEA)) {
-                client.player.removeStatusEffect(StatusEffects.NAUSEA);
-            }
+            if (blindness.get() && client.player.hasStatusEffect(StatusEffects.BLINDNESS)) client.player.removeStatusEffect(StatusEffects.BLINDNESS);
+            if (darkness.get() && client.player.hasStatusEffect(StatusEffects.DARKNESS)) client.player.removeStatusEffect(StatusEffects.DARKNESS);
+            if (nausea.get() && client.player.hasStatusEffect(StatusEffects.NAUSEA)) client.player.removeStatusEffect(StatusEffects.NAUSEA);
         }
     }
 
     public static class LowShieldModule extends Module {
-        public final SliderSetting offsetY = new SliderSetting("Offset Y", 0.35, 0.0, 0.80, 0.05);
-        public final SliderSetting offsetX = new SliderSetting("Offset X", 0.0, -0.4, 0.4, 0.05);
-        public final SliderSetting scale = new SliderSetting("Shield Scale", 0.65, 0.25, 1.0, 0.05);
-        public final BooleanSetting hideWhenHitting = new BooleanSetting("Hide On Swing", true);
-        public final BooleanSetting applyToMainHand = new BooleanSetting("Main Hand Also", false);
+        public final SliderSetting offsetY = new SliderSetting("Опустить щит Y", 0.35, 0.0, 0.80, 0.05, "");
+        public final SliderSetting scale = new SliderSetting("Масштаб щита", 0.70, 0.30, 1.0, 0.05, "x");
 
         public LowShieldModule() {
-            super("LowShield", "Опускает и уменьшает щит в руке, освобождая центр экрана", Category.REMOVALS);
+            super("LowShield", "Уменьшает и опускает щит во второй руке", Category.REMOVALS);
             registerSetting(offsetY);
-            registerSetting(offsetX);
             registerSetting(scale);
-            registerSetting(hideWhenHitting);
-            registerSetting(applyToMainHand);
         }
     }
 
     public static class NoRenderModule extends Module {
-        public final BooleanSetting totemAnimation = new BooleanSetting("Totem Animation", true);
-        public final BooleanSetting explosions = new BooleanSetting("Explosion Smoke", true);
-        public final BooleanSetting firework = new BooleanSetting("Firework Particles", true);
-        public final BooleanSetting fallingBlocks = new BooleanSetting("Falling Sand/Anvil", false);
-        public final BooleanSetting weatherRain = new BooleanSetting("Rain / Snow Particles", true);
+        public final BooleanSetting totem = new BooleanSetting("Анимация тотема", true);
+        public final BooleanSetting explosion = new BooleanSetting("Дым взрывов", true);
+        public final BooleanSetting fireworks = new BooleanSetting("Фейерверки", true);
 
         public NoRenderModule() {
-            super("NoRender", "Блокирует спам лагающих частиц взрывов, тотемов и фейерверков", Category.REMOVALS);
-            registerSetting(totemAnimation);
-            registerSetting(explosions);
-            registerSetting(firework);
-            registerSetting(fallingBlocks);
-            registerSetting(weatherRain);
+            super("NoRender", "Блокирует спам лагающих частиц взрывов и тотемов", Category.REMOVALS);
+            registerSetting(totem);
+            registerSetting(explosion);
+            registerSetting(fireworks);
         }
     }
 
     // ==========================================
-    // МОДУЛИ: COMBAT
+    // МОДУЛИ COMBAT
     // ==========================================
     public static class TriggerBotModule extends Module {
-        public final SliderSetting cooldown = new SliderSetting("Attack Cooldown", 1.0, 0.8, 1.0, 0.02, "%");
-        public final SliderSetting delayMs = new SliderSetting("Hit Delay", 25.0, 0.0, 200.0, 10.0, "ms");
-        public final BooleanSetting playersOnly = new BooleanSetting("Players Only", true);
-        public final BooleanSetting weaponOnly = new BooleanSetting("Weapon Only (Sword/Axe)", true);
-        public final BooleanSetting critOnly = new BooleanSetting("Crit Only (Falling)", false);
-        public final BooleanSetting checkShield = new BooleanSetting("Check Shield", true);
+        public final SliderSetting cooldown = new SliderSetting("Кулдаун атаки", 1.0, 0.8, 1.0, 0.02, "%");
+        public final SliderSetting delayMs = new SliderSetting("Задержка удара", 25.0, 0.0, 150.0, 5.0, "ms");
+        public final BooleanSetting playersOnly = new BooleanSetting("Только игроки", true);
 
         public TriggerBotModule() {
-            super("TriggerBot", "Автоматический выверенный удар при наведении прицела на противника", Category.COMBAT);
+            super("TriggerBot", "Автоматический удар при наведении перекрестия на цель", Category.COMBAT);
             registerSetting(cooldown);
             registerSetting(delayMs);
             registerSetting(playersOnly);
-            registerSetting(weaponOnly);
-            registerSetting(critOnly);
-            registerSetting(checkShield);
         }
     }
 
     public static class HitBoxesModule extends Module {
-        public final SliderSetting expand = new SliderSetting("Expand Size", 0.25, 0.05, 1.20, 0.05, "m");
-        public final SliderSetting expandY = new SliderSetting("Expand Height", 0.0, 0.0, 0.60, 0.05, "m");
-        public final BooleanSetting playersOnly = new BooleanSetting("Players Only", true);
-        public final BooleanSetting showBox = new BooleanSetting("Render Outline", true);
-        public final ModeSetting boxColor = new ModeSetting("Box Color", "Indigo", List.of("Indigo", "Crimson", "Green", "White"));
+        public final SliderSetting expand = new SliderSetting("Расширение", 0.30, 0.05, 1.20, 0.05, "m");
+        public final BooleanSetting playersOnly = new BooleanSetting("Только игроки", true);
 
         public HitBoxesModule() {
-            super("HitBoxes", "Расширяет хитбоксы целей для легкого попадания в динамичном PvP", Category.COMBAT);
+            super("HitBoxes", "Увеличивает объем хитбоксов целей для попаданий", Category.COMBAT);
             registerSetting(expand);
-            registerSetting(expandY);
             registerSetting(playersOnly);
-            registerSetting(showBox);
-            registerSetting(boxColor);
         }
     }
 
     public static class VelocityModule extends Module {
-        public final SliderSetting horizontal = new SliderSetting("Horizontal", 0.0, 0.0, 1.0, 0.05, "%");
-        public final SliderSetting vertical = new SliderSetting("Vertical", 0.0, 0.0, 1.0, 0.05, "%");
-        public final SliderSetting chance = new SliderSetting("Chance", 100.0, 20.0, 100.0, 5.0, "%");
-        public final BooleanSetting onlyMoving = new BooleanSetting("Only While Moving", false);
-        public final BooleanSetting waterCheck = new BooleanSetting("Water Check", true);
+        public final SliderSetting horizontal = new SliderSetting("По горизонтали", 0.0, 0.0, 1.0, 0.05, "%");
+        public final SliderSetting vertical = new SliderSetting("По вертикали", 0.0, 0.0, 1.0, 0.05, "%");
+        public final SliderSetting chance = new SliderSetting("Шанс срезки", 100.0, 20.0, 100.0, 5.0, "%");
 
         public VelocityModule() {
-            super("Velocity", "Снижает или полностью убирает отдачу от ударов, луков и взрывов", Category.COMBAT);
+            super("Velocity", "Снижает или полностью убирает отдачу от ударов и стрел", Category.COMBAT);
             registerSetting(horizontal);
             registerSetting(vertical);
             registerSetting(chance);
-            registerSetting(onlyMoving);
-            registerSetting(waterCheck);
         }
     }
 
     public static class AutoClickerModule extends Module {
-        public final SliderSetting minCps = new SliderSetting("Min CPS", 9.0, 4.0, 20.0, 1.0);
-        public final SliderSetting maxCps = new SliderSetting("Max CPS", 13.0, 6.0, 25.0, 1.0);
-        public final SliderSetting jitter = new SliderSetting("Jitter Factor", 0.0, 0.0, 2.0, 0.2);
-        public final BooleanSetting swordOnly = new BooleanSetting("Hold Weapon Only", true);
-        public final BooleanSetting breakBlocks = new BooleanSetting("Break Blocks Check", true);
+        public final SliderSetting minCps = new SliderSetting("Мин. CPS", 9.0, 4.0, 20.0, 1.0, "");
+        public final SliderSetting maxCps = new SliderSetting("Макс. CPS", 13.0, 6.0, 25.0, 1.0, "");
+        public final BooleanSetting swordOnly = new BooleanSetting("Только с мечом", true);
 
         public AutoClickerModule() {
-            super("TapeMouse", "Эмуляция быстрого кликанья мыши с реалистичным разбросом CPS", Category.COMBAT);
+            super("TapeMouse", "Эмуляция зажатия мыши с реалистичным разбросом CPS", Category.COMBAT);
             registerSetting(minCps);
             registerSetting(maxCps);
-            registerSetting(jitter);
             registerSetting(swordOnly);
-            registerSetting(breakBlocks);
         }
     }
 
     // ==========================================
-    // МОДУЛИ: MOVEMENT
+    // МОДУЛИ MOVEMENT
     // ==========================================
     public static class AutoSprintModule extends Module {
-        public final ModeSetting mode = new ModeSetting("Sprint Mode", "Vanilla", List.of("Vanilla", "Omni Sprint", "KeepSprint"));
-        public final BooleanSetting stopInWater = new BooleanSetting("Water Check", false);
-        public final BooleanSetting checkHunger = new BooleanSetting("Hunger Check", true);
+        public final ModeSetting mode = new ModeSetting("Режим", "Vanilla", List.of("Vanilla", "Omni"));
+        public final BooleanSetting checkHunger = new BooleanSetting("Проверка сытости", true);
 
         public AutoSprintModule() {
-            super("AutoSprint", "Автоматический непрерывный бег без двойного нажатия W", Category.MOVEMENT);
+            super("AutoSprint", "Автоматический непрерывный бег без двойного W", Category.MOVEMENT);
             registerSetting(mode);
-            registerSetting(stopInWater);
             registerSetting(checkHunger);
         }
 
@@ -699,8 +602,6 @@ public class VisualModClient implements ClientModInitializer {
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
             if (checkHunger.get() && client.player.getHungerManager().getFoodLevel() <= 6) return;
-            if (stopInWater.get() && client.player.isTouchingWater()) return;
-
             if (client.player.forwardSpeed > 0 && !client.player.isSneaking() && !client.player.horizontalCollision) {
                 client.player.setSprinting(true);
             }
@@ -708,57 +609,43 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class FastBreakModule extends Module {
-        public final SliderSetting speedMultiplier = new SliderSetting("Speed Multiplier", 1.40, 1.0, 3.0, 0.1, "x");
-        public final BooleanSetting instantCreative = new BooleanSetting("Instant Creative", true);
-        public final BooleanSetting noDelay = new BooleanSetting("Zero Hit Delay", true);
+        public final SliderSetting speed = new SliderSetting("Множитель скорости", 1.40, 1.0, 2.5, 0.1, "x");
 
         public FastBreakModule() {
-            super("FastBreak", "Ускоряет разрушение блоков и убирает паузу между ломанием", Category.MOVEMENT);
-            registerSetting(speedMultiplier);
-            registerSetting(instantCreative);
-            registerSetting(noDelay);
+            super("FastBreak", "Увеличивает скорость вашего копания в половину", Category.MOVEMENT);
+            registerSetting(speed);
         }
     }
 
     public static class InventoryMoveModule extends Module {
-        public final BooleanSetting allowSprint = new BooleanSetting("Allow Sprint", true);
-        public final BooleanSetting allowJump = new BooleanSetting("Allow Jump", true);
-        public final BooleanSetting allowSneak = new BooleanSetting("Allow Sneak", true);
+        public final BooleanSetting sprint = new BooleanSetting("Бег в GUI", true);
+        public final BooleanSetting jump = new BooleanSetting("Прыжки в GUI", true);
 
         public InventoryMoveModule() {
-            super("InventoryMove", "Позволяет свободно передвигаться и прыгать во время открытого инвентаря", Category.MOVEMENT);
-            registerSetting(allowSprint);
-            registerSetting(allowJump);
-            registerSetting(allowSneak);
+            super("InventoryMove", "Свободное перемещение и прыжки при открытом инвентаре", Category.MOVEMENT);
+            registerSetting(sprint);
+            registerSetting(jump);
         }
     }
 
     public static class WaterSpeedModule extends Module {
-        public final SliderSetting speedBoost = new SliderSetting("Speed Factor", 1.30, 1.0, 2.5, 0.05, "x");
-        public final BooleanSetting upwardBoost = new BooleanSetting("Upward Boost", true);
-        public final BooleanSetting dolphinGrace = new BooleanSetting("Dolphin Grace Sim", false);
+        public final SliderSetting speed = new SliderSetting("Ускорение в воде", 1.35, 1.0, 2.5, 0.05, "x");
 
         public WaterSpeedModule() {
-            super("WaterSpeed", "Увеличивает скорость плавания и маневренность под водой", Category.MOVEMENT);
-            registerSetting(speedBoost);
-            registerSetting(upwardBoost);
-            registerSetting(dolphinGrace);
+            super("WaterSpeed", "Увеличивает маневренность и скорость плавания под водой", Category.MOVEMENT);
+            registerSetting(speed);
         }
     }
 
     // ==========================================
-    // МОДУЛИ: MISC
+    // МОДУЛИ MISC
     // ==========================================
     public static class FastPlaceModule extends Module {
-        public final SliderSetting delay = new SliderSetting("Delay Ticks", 0.0, 0.0, 3.0, 1.0, "t");
-        public final BooleanSetting blocksOnly = new BooleanSetting("Blocks Only", true);
-        public final BooleanSetting projectiles = new BooleanSetting("Fast Pearls/Snowballs", true);
+        public final SliderSetting delay = new SliderSetting("Задержка ПКМ", 0.0, 0.0, 3.0, 1.0, "t");
 
         public FastPlaceModule() {
-            super("FastPlace", "Убирает 4-тиковую задержку ПКМ при строительстве и бросках", Category.MISC);
+            super("FastPlace", "Убирает стандартную задержку ПКМ при строительстве", Category.MISC);
             registerSetting(delay);
-            registerSetting(blocksOnly);
-            registerSetting(projectiles);
         }
 
         @Override
@@ -766,11 +653,9 @@ public class VisualModClient implements ClientModInitializer {
             if (!isEnabled()) return;
             try {
                 for (Field f : MinecraftClient.class.getDeclaredFields()) {
-                    if (f.getType() == int.class) {
+                    if (f.getType() == int.class && (f.getName().equals("itemUseCooldown") || f.getName().equals("field_1752"))) {
                         f.setAccessible(true);
-                        if (f.getName().equals("itemUseCooldown") || f.getName().equals("field_1752")) {
-                            f.setInt(client, delay.get().intValue());
-                        }
+                        f.setInt(client, delay.get().intValue());
                     }
                 }
             } catch (Throwable ignored) {}
@@ -778,33 +663,25 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class AutoToolModule extends Module {
-        public final BooleanSetting switchBack = new BooleanSetting("Switch Back", true);
-        public final BooleanSetting swordForWeb = new BooleanSetting("Sword For Cobweb", true);
-        public final BooleanSetting preferSilkTouch = new BooleanSetting("Prefer Silk Touch", false);
+        public final BooleanSetting switchBack = new BooleanSetting("Возвращать предмет", true);
 
         public AutoToolModule() {
-            super("AutoTool", "Автоматически выбирает наиболее эффективный инструмент при копании", Category.MISC);
+            super("AutoTool", "Автоматически выбирает эффективный инструмент в руку при ударе", Category.MISC);
             registerSetting(switchBack);
-            registerSetting(swordForWeb);
-            registerSetting(preferSilkTouch);
         }
     }
 
     public static class FreeCameraModule extends Module {
-        public final SliderSetting flySpeed = new SliderSetting("Camera Speed", 1.8, 0.5, 5.0, 0.2, "x");
-        public final BooleanSetting freezePlayer = new BooleanSetting("Freeze Body", true);
-        public final BooleanSetting showOriginalBody = new BooleanSetting("Show Ghost Body", true);
+        public final SliderSetting flySpeed = new SliderSetting("Скорость камеры", 1.8, 0.5, 5.0, 0.2, "x");
 
         public FreeCameraModule() {
-            super("FreeCamera", "Свободный полет камерой сквозь стены для осмотра базы или шахт", Category.MISC);
+            super("FreeCamera", "Свободный полет камерой сквозь стены для осмотра базы", Category.MISC);
             registerSetting(flySpeed);
-            registerSetting(freezePlayer);
-            registerSetting(showOriginalBody);
         }
     }
 
     // ==========================================
-    // МЕНЕДЖЕР МОДУЛЕЙ
+    // МОДУЛЬНЫЙ МЕНЕДЖЕР
     // ==========================================
     public static class ModuleManager {
         private final List<Module> modules = new ArrayList<>();
@@ -845,9 +722,7 @@ public class VisualModClient implements ClientModInitializer {
 
         public void onTick(MinecraftClient client) {
             for (Module m : modules) {
-                if (m.isEnabled()) {
-                    m.onTick(client);
-                }
+                if (m.isEnabled()) m.onTick(client);
             }
         }
 
@@ -861,12 +736,16 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     // ==========================================
-    // CLICKGUI С ПОДДЕРЖКОЙ ВЕРТИКАЛЬНОГО СКРОЛЛА
+    // CLICKGUI: ТОЧНАЯ КОПИЯ ДИЗАЙНА С РЕФЕРЕНСА
     // ==========================================
     public static class CelestialColumnClickGui extends Screen {
         private final ModuleManager moduleManager;
         private final List<GuiColumn> columns = new ArrayList<>();
-        private static String hoveredDescription = "";
+        public static String hoveredDescription = "";
+
+        // Прямой опрос состояния мыши для 100% срабатывания кликов
+        private boolean wasLeftPressed = false;
+        private boolean wasRightPressed = false;
 
         public CelestialColumnClickGui(ModuleManager moduleManager) {
             super(Text.literal("Celestial ClickGUI"));
@@ -878,83 +757,104 @@ public class VisualModClient implements ClientModInitializer {
             columns.clear();
             Category[] categories = Category.values();
 
-            int colWidth = 148;
-            int gap = 8;
+            int colWidth = 142;
+            int gap = 10;
             int totalWidth = (categories.length * colWidth) + ((categories.length - 1) * gap);
-            int startX = Math.max(10, (this.width - totalWidth) / 2);
-            int startY = 46;
+            int startX = Math.max(8, (this.width - totalWidth) / 2);
+            int startY = 38;
+            int colHeight = this.height - startY - 20;
 
             for (int i = 0; i < categories.length; i++) {
                 Category cat = categories[i];
                 int x = startX + i * (colWidth + gap);
-                columns.add(new GuiColumn(cat, moduleManager.getModulesByCategory(cat), x, startY, colWidth, this.height));
+                columns.add(new GuiColumn(cat, moduleManager.getModulesByCategory(cat), x, startY, colWidth, colHeight));
             }
         }
 
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-            // Мягкое затемнение фона
-            context.fill(0, 0, this.width, this.height, 0x880A0A0F);
+            // Мягкое затемнение фона игры
+            context.fill(0, 0, this.width, this.height, 0x77000000);
 
             hoveredDescription = "";
+
+            // Прямой перехват мыши из GLFW для идеального отклика кликов
+            handleDirectMouseInput(mouseX, mouseY);
 
             // Рендер колонок
             for (GuiColumn col : columns) {
                 col.render(context, mouseX, mouseY);
             }
 
-            // ВЕРХНЯЯ СТРОКА ОПИСАНИЯ
+            // ВЕРХНЯЯ СТРОКА ОПИСАНИЯ КАК НА СКРИНШОТЕ (БЕЗ РАМОК, ЧИСТЫЙ ТЕКСТ ПО ЦЕНТРУ)
             MinecraftClient mc = MinecraftClient.getInstance();
-            String descText = hoveredDescription.isEmpty()
-                    ? "Delta Visuals • ЛКМ: Вкл/Выкл | ПКМ или [≡]: Настройки | Колесико: Скролл колонок"
-                    : hoveredDescription;
-
-            int textWidth = mc.textRenderer.getWidth(descText);
-            int centerX = this.width / 2;
-            int badgeY = 16;
-
-            drawGlassPlate(context, centerX - (textWidth / 2) - 14, badgeY - 5, textWidth + 28, 20, 0xEE111118, 0x336366F1);
-            drawTextSafe(context, mc.textRenderer, descText, centerX - (textWidth / 2), badgeY + 1, 0xFFFFFFFF, true);
+            if (!hoveredDescription.isEmpty()) {
+                int textW = mc.textRenderer.getWidth(hoveredDescription);
+                int titleX = (this.width - textW) / 2;
+                drawTextSafe(context, mc.textRenderer, hoveredDescription, titleX, 16, 0xFFFFFFFF, true);
+            }
 
             super.render(context, mouseX, mouseY, delta);
+        }
+
+        private void handleDirectMouseInput(int mouseX, int mouseY) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.getWindow() == null || mc.getWindow().getHandle() == 0) return;
+            long handle = mc.getWindow().getHandle();
+
+            boolean leftDown = GLFW.glfwGetMouseButton(handle, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
+            boolean rightDown = GLFW.glfwGetMouseButton(handle, GLFW.GLFW_MOUSE_BUTTON_2) == GLFW.GLFW_PRESS;
+
+            // Нажатие ЛКМ (Включение / Перемещение слайдера)
+            if (leftDown && !wasLeftPressed) {
+                dispatchClick(mouseX, mouseY, 0);
+            }
+            // Нажатие ПКМ (Раскрытие настроек)
+            if (rightDown && !wasRightPressed) {
+                dispatchClick(mouseX, mouseY, 1);
+            }
+
+            // Перетаскивание слайдера при зажатой ЛКМ
+            if (leftDown) {
+                for (GuiColumn col : columns) {
+                    col.mouseDragged(mouseX, mouseY);
+                }
+            } else {
+                for (GuiColumn col : columns) {
+                    col.mouseReleased(0);
+                }
+            }
+
+            if (!rightDown) {
+                for (GuiColumn col : columns) {
+                    col.mouseReleased(1);
+                }
+            }
+
+            wasLeftPressed = leftDown;
+            wasRightPressed = rightDown;
+        }
+
+        private void dispatchClick(int mouseX, int mouseY, int button) {
+            for (GuiColumn col : columns) {
+                if (col.isMouseOverColumn(mouseX, mouseY)) {
+                    if (col.mouseClicked(mouseX, mouseY, button)) {
+                        playClickSound();
+                        return;
+                    }
+                }
+            }
         }
 
         @Override
         public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
             for (GuiColumn col : columns) {
-                if (col.isMouseOver((int) mouseX, (int) mouseY)) {
+                if (col.isMouseOverColumn((int) mouseX, (int) mouseY)) {
                     col.handleScroll(verticalAmount);
                     return true;
                 }
             }
             return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
-        }
-
-        @Override
-        public boolean mouseClicked(double mouseX, double mouseY, int button) {
-            for (GuiColumn col : columns) {
-                if (col.mouseClicked((int) mouseX, (int) mouseY, button)) {
-                    playClickSound();
-                    return true;
-                }
-            }
-            return super.mouseClicked(mouseX, mouseY, button);
-        }
-
-        @Override
-        public boolean mouseReleased(double mouseX, double mouseY, int button) {
-            for (GuiColumn col : columns) {
-                col.mouseReleased(button);
-            }
-            return super.mouseReleased(mouseX, mouseY, button);
-        }
-
-        @Override
-        public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-            for (GuiColumn col : columns) {
-                col.mouseDragged((int) mouseX, (int) mouseY);
-            }
-            return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
         }
 
         @Override
@@ -970,37 +870,46 @@ public class VisualModClient implements ClientModInitializer {
             } catch (Throwable ignored) {}
         }
 
-        public static void drawGlassPlate(DrawContext context, int x, int y, int w, int h, int bg, int border) {
-            context.fill(x, y, x + w, y + h, bg);
-            context.fill(x, y, x + w, y + 1, border);
-            context.fill(x, y + h - 1, x + w, y + h, border);
-            context.fill(x, y, x + 1, y + h, border);
-            context.fill(x + w - 1, y, x + w, y + h, border);
+        public static void drawSmoothRect(DrawContext context, int x, int y, int w, int h, int bg, int border) {
+            context.fill(x + 1, y, x + w - 1, y + h, bg);
+            context.fill(x, y + 1, x + 1, y + h - 1, bg);
+            context.fill(x + w - 1, y + 1, x + w, y + h - 1, bg);
+
+            if (border != 0) {
+                context.fill(x + 1, y, x + w - 1, y + 1, border);
+                context.fill(x + 1, y + h - 1, x + w - 1, y + h, border);
+                context.fill(x, y + 1, x + 1, y + h - 1, border);
+                context.fill(x + w - 1, y + 1, x + w, y + h - 1, border);
+            }
         }
     }
 
     // ==========================================
-    // ПАНЕЛЬ-КОЛОНКА С ИНТЕЛЛЕКТУАЛЬНЫМ СКРОЛЛОМ
+    // ВЕРТИКАЛЬНАЯ КОЛОНКА КАТЕГОРИИ
     // ==========================================
     public static class GuiColumn {
         private final Category category;
         private final int x;
         private final int y;
         private final int width;
-        private final int screenHeight;
+        private final int height;
         private int scrollY = 0;
         private final List<GuiModuleCard> cards = new ArrayList<>();
 
-        public GuiColumn(Category category, List<Module> modules, int x, int y, int width, int screenHeight) {
+        public GuiColumn(Category category, List<Module> modules, int x, int y, int width, int height) {
             this.category = category;
             this.x = x;
             this.y = y;
             this.width = width;
-            this.screenHeight = screenHeight;
+            this.height = height;
 
             for (Module m : modules) {
-                cards.add(new GuiModuleCard(m, x + 5, width - 10));
+                cards.add(new GuiModuleCard(m, x + 6, width - 12));
             }
+        }
+
+        public boolean isMouseOverColumn(int mouseX, int mouseY) {
+            return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
         }
 
         public int getTotalContentHeight() {
@@ -1008,56 +917,49 @@ public class VisualModClient implements ClientModInitializer {
             for (GuiModuleCard card : cards) {
                 h += card.getTotalHeight() + 3;
             }
-            return h + 6;
-        }
-
-        public int getMaxVisibleHeight() {
-            return screenHeight - y - 16;
-        }
-
-        public boolean isMouseOver(int mouseX, int mouseY) {
-            return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + Math.min(getTotalContentHeight(), getMaxVisibleHeight());
+            return h + 8;
         }
 
         public void handleScroll(double amount) {
-            int maxScroll = Math.max(0, getTotalContentHeight() - getMaxVisibleHeight());
-            scrollY -= (int) (amount * 22);
+            int maxScroll = Math.max(0, getTotalContentHeight() - height);
+            scrollY -= (int) (amount * 24);
             scrollY = MathHelper.clamp(scrollY, 0, maxScroll);
         }
 
         public void render(DrawContext context, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
 
-            int renderHeight = Math.min(getTotalContentHeight(), getMaxVisibleHeight());
-            CelestialColumnClickGui.drawGlassPlate(context, x, y, width, renderHeight, 0xDD111116, 0x22FFFFFF);
+            // Фон всей высокой колонки (матовое стекло)
+            CelestialColumnClickGui.drawSmoothRect(context, x, y, width, height, 0xEE121217, 0x24FFFFFF);
 
-            // Шапка колонки
+            // Шапка категории
             String headerText = category.getIcon() + "  " + category.getDisplayName();
-            int headerWidth = mc.textRenderer.getWidth(headerText);
-            int titleX = x + (width - headerWidth) / 2;
-
+            int headerW = mc.textRenderer.getWidth(headerText);
+            int titleX = x + (width - headerW) / 2;
             drawTextSafe(context, mc.textRenderer, headerText, titleX, y + 10, 0xFFFFFFFF, true);
-            context.fill(x + 8, y + 26, x + width - 8, y + 27, 0x1FFFFFFF);
 
-            // Отрисовка карточек с учетом скролла
+            // Разделительная линия
+            context.fill(x + 10, y + 26, x + width - 10, y + 27, 0x1AFFFFFF);
+
+            // Отрисовка карточек с ограничением по высоте колонки
             int currentY = y + 32 - scrollY;
-            int bottomClip = y + renderHeight - 4;
+            int clipTop = y + 30;
+            int clipBottom = y + height - 4;
 
             for (GuiModuleCard card : cards) {
                 int cardH = card.getTotalHeight();
-                if (currentY + cardH >= y + 30 && currentY <= bottomClip) {
+                if (currentY + cardH >= clipTop && currentY <= clipBottom) {
                     card.setY(currentY);
                     card.render(context, mouseX, mouseY);
                 } else {
                     card.setY(-9999);
                 }
-                currentY += cardH + 3;
+                currentY += cardH + 4;
             }
         }
 
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
-            int renderHeight = Math.min(getTotalContentHeight(), getMaxVisibleHeight());
-            if (mouseY < y + 30 || mouseY > y + renderHeight) return false;
+            if (mouseY < y + 30 || mouseY > y + height) return false;
 
             for (GuiModuleCard card : cards) {
                 if (card.mouseClicked(mouseX, mouseY, button)) {
@@ -1077,12 +979,12 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     // ==========================================
-    // КАРТОЧКА МОДУЛЯ (АККОРДЕОН НАСТРОЕК)
+    // КАРТОЧКА МОДУЛЯ (КНОПКА И АККОРДЕОН)
     // ==========================================
     public static class GuiModuleCard {
         private final Module module;
         private final int x;
-        private int y;
+        private int y = -9999;
         private final int width;
         private boolean expanded = false;
         private final List<GuiSettingWidget> widgets = new ArrayList<>();
@@ -1102,7 +1004,7 @@ public class VisualModClient implements ClientModInitializer {
         public void setY(int y) { this.y = y; }
 
         public int getTotalHeight() {
-            int h = 22;
+            int h = 23;
             if (expanded) {
                 for (GuiSettingWidget w : widgets) {
                     h += w.getHeight() + 3;
@@ -1116,28 +1018,33 @@ public class VisualModClient implements ClientModInitializer {
             if (y < -500) return;
 
             MinecraftClient mc = MinecraftClient.getInstance();
-            boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 22;
+            boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 23;
 
             if (hovered) {
                 CelestialColumnClickGui.hoveredDescription = module.getDescription();
             }
 
-            int bg = module.isEnabled() ? 0xFF28243C : (hovered ? 0xFF20202A : 0xAA16161E);
-            int border = module.isEnabled() ? 0x996366F1 : (hovered ? 0x44FFFFFF : 0x14FFFFFF);
+            // Цвет плашки: активная подсвечивается индиго-фиолетовым, неактивная - темная
+            int bg = module.isEnabled() ? 0xFF3730A3 : (hovered ? 0xFF23232F : 0xDD181822);
+            int border = module.isEnabled() ? 0xFF818CF8 : (hovered ? 0x44FFFFFF : 0x1AFFFFFF);
 
-            CelestialColumnClickGui.drawGlassPlate(context, x, y, width, getTotalHeight(), bg, border);
+            CelestialColumnClickGui.drawSmoothRect(context, x, y, width, 23, bg, border);
 
-            int textColor = module.isEnabled() ? 0xFFFFFFFF : (hovered ? 0xFFD1D5DB : 0xFF888899);
-            drawTextSafe(context, mc.textRenderer, module.getName(), x + 8, y + 6, textColor, false);
+            int textColor = module.isEnabled() ? 0xFFFFFFFF : (hovered ? 0xFFE2E8F0 : 0xFF94A3B8);
+            drawTextSafe(context, mc.textRenderer, module.getName(), x + 8, y + 7, textColor, false);
 
+            // Кнопка настроек "≡"
             if (!widgets.isEmpty()) {
-                int iconColor = expanded ? 0xFF818CF8 : 0xFF555566;
-                drawTextSafe(context, mc.textRenderer, "≡", x + width - 15, y + 6, iconColor, false);
+                int iconColor = expanded ? 0xFF818CF8 : (hovered ? 0xFFD1D5DB : 0xFF64748B);
+                drawTextSafe(context, mc.textRenderer, "≡", x + width - 15, y + 7, iconColor, false);
             }
 
+            // Раскрытый список параметров
             if (expanded) {
-                int widgetY = y + 24;
-                context.fill(x + 5, y + 22, x + width - 5, y + 23, 0x1FFFFFFF);
+                int widgetContainerH = getTotalHeight() - 25;
+                CelestialColumnClickGui.drawSmoothRect(context, x, y + 24, width, widgetContainerH, 0xEE0D0D14, 0x22FFFFFF);
+
+                int widgetY = y + 27;
                 for (GuiSettingWidget w : widgets) {
                     w.render(context, x + 6, widgetY, width - 12, mouseX, mouseY);
                     widgetY += w.getHeight() + 3;
@@ -1148,20 +1055,28 @@ public class VisualModClient implements ClientModInitializer {
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
             if (y < -500) return false;
 
-            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 22) {
+            // Клик по основной кнопке модуля
+            if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 23) {
+                // Если кликнули на значок "≡" в правой части карточки
+                if (mouseX >= x + width - 20) {
+                    if (!widgets.isEmpty()) expanded = !expanded;
+                    return true;
+                }
+
                 if (button == 0) {
+                    // ЛКМ: включить / выключить
                     module.toggle();
                     return true;
                 } else if (button == 1) {
-                    if (!widgets.isEmpty()) {
-                        expanded = !expanded;
-                    }
+                    // ПКМ: развернуть настройки
+                    if (!widgets.isEmpty()) expanded = !expanded;
                     return true;
                 }
             }
 
+            // Клик внутри параметров
             if (expanded) {
-                int widgetY = y + 24;
+                int widgetY = y + 27;
                 for (GuiSettingWidget w : widgets) {
                     if (w.mouseClicked(x + 6, widgetY, width - 12, mouseX, mouseY, button)) {
                         return true;
@@ -1209,10 +1124,10 @@ public class VisualModClient implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
 
             String text = String.format("%s: §7%.2f%s", setting.getName(), setting.get(), setting.getSuffix());
-            drawTextSafe(context, mc.textRenderer, text, x + 2, y + 2, 0xFFCCCCCC, false);
+            drawTextSafe(context, mc.textRenderer, text, x + 2, y + 2, 0xFFE2E8F0, false);
 
             int barY = y + 13;
-            context.fill(x, barY, x + width, barY + 4, 0xFF22222E);
+            context.fill(x, barY, x + width, barY + 4, 0xFF1E1E28);
 
             double pct = (setting.get() - setting.getMin()) / (setting.getMax() - setting.getMin());
             int fillW = (int) (width * MathHelper.clamp(pct, 0.0, 1.0));
@@ -1221,7 +1136,7 @@ public class VisualModClient implements ClientModInitializer {
 
         @Override
         public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-            if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y + 9 && mouseY <= y + 19) {
+            if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y + 8 && mouseY <= y + 20) {
                 this.sliding = true;
                 update(mouseX);
                 return true;
@@ -1255,11 +1170,11 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 3, 0xFFAAAAAA, false);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1, false);
 
             String modeStr = "§8[§f" + setting.get() + "§8]";
             int modeW = mc.textRenderer.getWidth(modeStr);
-            drawTextSafe(context, mc.textRenderer, modeStr, x + width - modeW - 2, y + 3, 0xFF818CF8, false);
+            drawTextSafe(context, mc.textRenderer, modeStr, x + width - modeW - 2, y + 4, 0xFF818CF8, false);
         }
 
         @Override
@@ -1283,11 +1198,11 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 3, 0xFFAAAAAA, false);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1, false);
 
             int btnX = x + width - 13;
-            int col = setting.get() ? 0xFF6366F1 : 0xFF2A2A38;
-            CelestialColumnClickGui.drawGlassPlate(context, btnX, y + 2, 12, 12, col, 0x44FFFFFF);
+            int col = setting.get() ? 0xFF6366F1 : 0xFF272738;
+            CelestialColumnClickGui.drawSmoothRect(context, btnX, y + 3, 11, 11, col, 0x44FFFFFF);
         }
 
         @Override
