@@ -13,13 +13,15 @@ import net.minecraft.util.math.MathHelper;
 import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
 
-import java.awt.Color;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Главный клиентский класс мода Visuals для Minecraft 1.21.x Fabric.
- * Объединяет менеджер модулей, настройки, хуки рендера и встроенный ClickGUI.
+ * Полностью совместим с 1.21.0 - 1.21.11+.
  */
 public class VisualModClient implements ClientModInitializer {
     public static final String MOD_ID = "visuals_mod";
@@ -27,34 +29,100 @@ public class VisualModClient implements ClientModInitializer {
 
     private KeyBinding clickGuiKey;
     private final ModuleManager moduleManager = new ModuleManager();
+    private boolean wasInsertKeyDown = false;
 
     @Override
     public void onInitializeClient() {
         INSTANCE = this;
 
-        // Регистрация клавиши открытия ClickGUI (по умолчанию INSERT)
-        clickGuiKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.visuals.clickgui",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_INSERT,
-                "category.visuals"
-        ));
+        // Безопасное создание KeyBinding с поддержкой 1.21.11 (KeyBinding.Category) и более ранних 1.21.x
+        clickGuiKey = createKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT);
+        if (clickGuiKey != null) {
+            try {
+                KeyBindingHelper.registerKeyBinding(clickGuiKey);
+            } catch (Throwable ignored) {
+                // Если Fabric API отклонит бинд, будет работать прямой GLFW-перехват ниже
+            }
+        }
 
         // Инициализация модулей
         moduleManager.init();
 
-        // Подписка на клиентские тики для обработки открытия GUI и логики
+        // Подписка на клиентские тики для открытия GUI и логики
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (clickGuiKey.wasPressed()) {
-                if (client.currentScreen == null) {
-                    client.setScreen(new ClickGuiScreen(moduleManager));
+            boolean openRequested = false;
+
+            // 1. Проверка через KeyBinding (если успешно зарегистрирован)
+            if (clickGuiKey != null && clickGuiKey.wasPressed()) {
+                openRequested = true;
+            }
+
+            // 2. Прямой опрос GLFW Insert на случай несовместимости KeyBinding на 1.21.11
+            if (client.getWindow() != null && client.getWindow().getHandle() != 0) {
+                long handle = client.getWindow().getHandle();
+                boolean isDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
+                if (isDown && !wasInsertKeyDown) {
+                    openRequested = true;
                 }
+                wasInsertKeyDown = isDown;
+            }
+
+            if (openRequested && client.currentScreen == null) {
+                client.setScreen(new ClickGuiScreen(moduleManager));
             }
 
             if (client.world != null && client.player != null) {
                 moduleManager.onTick(client);
             }
         });
+    }
+
+    /**
+     * Создает KeyBinding с учетом изменений сигнатуры конструктора в Minecraft 1.21.9 - 1.21.11
+     */
+    private KeyBinding createKeyBindingSafely(String translationKey, int defaultKey) {
+        try {
+            for (Constructor<?> ctor : KeyBinding.class.getConstructors()) {
+                Class<?>[] params = ctor.getParameterTypes();
+                
+                // Конструктор вида (String, int, Category/String)
+                if (params.length == 3 && params[0] == String.class && params[1] == int.class) {
+                    if (params[2] == String.class) {
+                        return (KeyBinding) ctor.newInstance(translationKey, defaultKey, "category.visuals");
+                    } else {
+                        Object category = resolveCategoryInstance(params[2]);
+                        return (KeyBinding) ctor.newInstance(translationKey, defaultKey, category);
+                    }
+                }
+
+                // Конструктор вида (String, InputUtil.Type, int, Category/String)
+                if (params.length == 4 && params[0] == String.class && params[2] == int.class) {
+                    if (params[3] == String.class) {
+                        return (KeyBinding) ctor.newInstance(translationKey, InputUtil.Type.KEYSYM, defaultKey, "category.visuals");
+                    } else {
+                        Object category = resolveCategoryInstance(params[3]);
+                        return (KeyBinding) ctor.newInstance(translationKey, InputUtil.Type.KEYSYM, defaultKey, category);
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            System.out.println("[VisualsMod] KeyBinding registration fallback to GLFW: " + t.getMessage());
+        }
+        return null;
+    }
+
+    private Object resolveCategoryInstance(Class<?> categoryClass) {
+        try {
+            // В 1.21.11 класс KeyBinding.Category содержит константы MISC, MOVEMENT и т.д.
+            for (Field field : categoryClass.getDeclaredFields()) {
+                if (Modifier.isStatic(field.getModifiers()) && categoryClass.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    Object cat = field.get(null);
+                    if (cat != null) return cat;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     public ModuleManager getModuleManager() {
@@ -202,8 +270,7 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     /**
-     * Модуль Aspect Ratio: позволяет изменять соотношение сторон экрана (кастомное FOV/растянутый экран).
-     * Значение передается в матрицу проекции через хук в рендерере (GameRenderer).
+     * Модуль Aspect Ratio: позволяет изменять соотношение сторон экрана.
      */
     public static class AspectRatioModule extends Module {
         public final NumberSetting ratio = new NumberSetting("Ratio", 1.77, 0.50, 2.50, 0.05);
@@ -230,9 +297,6 @@ public class VisualModClient implements ClientModInitializer {
             };
         }
 
-        /**
-         * Модификатор матрицы проекции камеры (для MixinGameRenderer).
-         */
         public Matrix4f applyProjection(Matrix4f matrix, float fov, float defaultAspect, float nearPlane, float farPlane) {
             if (!isEnabled()) return matrix;
             float newAspect = getAspectRatio(defaultAspect);
@@ -242,8 +306,7 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     /**
-     * Модуль Ambience: управление визуальной атмосферой мира
-     * (кастомное время суток, цвет тумана, кастомное освещение неба).
+     * Модуль Ambience: управление визуальной атмосферой мира.
      */
     public static class AmbienceModule extends Module {
         public final ModeSetting timeMode = new ModeSetting("Time", "Sunset", List.of("Day", "Sunset", "Night", "Custom", "Cycle"));
@@ -280,19 +343,7 @@ public class VisualModClient implements ClientModInitializer {
                 default -> customTime.get().longValue();
             };
 
-            // Устанавливаем клиентское время мира
             client.world.setTimeOfDay(targetTime);
-        }
-
-        public float[] getCustomFogColor(float originalR, float originalG, float originalB) {
-            if (!isEnabled() || !customFog.get()) {
-                return new float[]{originalR, originalG, originalB};
-            }
-            return new float[]{
-                    fogRed.get().floatValue(),
-                    fogGreen.get().floatValue(),
-                    fogBlue.get().floatValue()
-            };
         }
     }
 
@@ -335,13 +386,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    /**
-     * Полноценный экран ClickGUI:
-     * - Перетаскиваемые панели категорий
-     * - Кнопки переключения модулей
-     * - Выпадающие списки и слайдеры настроек
-     * - Современная темная тема с акцентной подсветкой
-     */
     public static class ClickGuiScreen extends Screen {
         private final List<GuiPanel> panels = new ArrayList<>();
 
@@ -361,10 +405,9 @@ public class VisualModClient implements ClientModInitializer {
 
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-            // Градиентное затемнение заднего плана
-            renderBackground(context, mouseX, mouseY, delta);
+            // Надежное полупрозрачное затемнение фона без зависимости от сигнатуры renderBackground
+            context.fill(0, 0, this.width, this.height, 0x88000000);
 
-            // Отрисовка всех панелей
             for (GuiPanel panel : panels) {
                 panel.render(context, mouseX, mouseY);
             }
@@ -431,26 +474,31 @@ public class VisualModClient implements ClientModInitializer {
             int headerHeight = 16;
             int totalContentHeight = calculateContentHeight();
 
-            // Основной фон панели
+            // Фон панели
             context.fill(x, y + headerHeight, x + width, y + headerHeight + totalContentHeight, 0xDD121217);
 
-            // Шапка панели с акцентной сине-фиолетовой полосой
+            // Шапка панели
             context.fill(x, y, x + width, y + headerHeight, 0xFF1E1E26);
             context.fill(x, y + headerHeight - 1, x + width, y + headerHeight, 0xFF6366F1);
 
-            // Текст заголовка
             MinecraftClient mc = MinecraftClient.getInstance();
             context.drawText(mc.textRenderer, title, x + 6, y + 4, 0xFFFFFFFF, false);
 
-            // Отрисовка кнопок модулей
             int offsetY = y + headerHeight;
             for (ModuleButton btn : buttons) {
                 btn.render(context, x, offsetY, width, mouseX, mouseY);
                 offsetY += btn.getHeight();
             }
 
-            // Обводка панели
-            context.drawBorder(x, y, width, headerHeight + totalContentHeight, 0x44FFFFFF);
+            // Безопасная отрисовка границы
+            drawOutline(context, x, y, width, headerHeight + totalContentHeight, 0x44FFFFFF);
+        }
+
+        private void drawOutline(DrawContext context, int x, int y, int w, int h, int color) {
+            context.fill(x, y, x + w, y + 1, color);
+            context.fill(x, y + h - 1, x + w, y + h, color);
+            context.fill(x, y, x + 1, y + h, color);
+            context.fill(x + w - 1, y, x + w, y + h, color);
         }
 
         public int calculateContentHeight() {
@@ -462,7 +510,6 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
-            // Клик по шапке: перетаскивание
             if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 16) {
                 if (button == 0) {
                     isDragging = true;
@@ -472,7 +519,6 @@ public class VisualModClient implements ClientModInitializer {
                 }
             }
 
-            // Клик по элементам модулей
             int offsetY = y + 16;
             for (ModuleButton btn : buttons) {
                 if (btn.mouseClicked(x, offsetY, width, mouseX, mouseY, button)) {
@@ -619,7 +665,6 @@ public class VisualModClient implements ClientModInitializer {
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
             context.fill(x, y, x + width, y + 13, 0xFF141419);
-
             context.drawText(mc.textRenderer, setting.getName(), x + 4, y + 3, 0xFFCCCCCC, false);
 
             int checkColor = setting.get() ? 0xFF22C55E : 0xFFEF4444;
@@ -660,7 +705,6 @@ public class VisualModClient implements ClientModInitializer {
             double pct = (setting.get() - setting.getMin()) / (setting.getMax() - setting.getMin());
             int fillWidth = (int) (width * MathHelper.clamp(pct, 0.0, 1.0));
 
-            // Заполняющая полоска слайдера
             context.fill(x, y + 12, x + fillWidth, y + 15, 0xFF6366F1);
             context.fill(x + fillWidth, y + 12, x + width, y + 15, 0xFF2E2E38);
 
@@ -725,28 +769,4 @@ public class VisualModClient implements ClientModInitializer {
             return false;
         }
     }
-
-    /**
-     * ПРИМЕРЫ МИКСИНОВ ДЛЯ РЕАЛИЗАЦИИ ЭФФЕКТОВ:
-     *
-     * 1) Aspect Ratio Mixin:
-     * Hook в {@code GameRenderer.getBasicProjectionMatrix(double fov)}:
-     * <pre>
-     * {@code
-     * @Inject(method = "getBasicProjectionMatrix", at = @At("HEAD"), cancellable = true)
-     * private void onGetProjectionMatrix(double fov, CallbackInfoReturnable<Matrix4f> cir) {
-     *     var mod = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.AspectRatioModule.class);
-     *     if (mod != null && mod.isEnabled()) {
-     *         float originalAspect = (float) this.client.getWindow().getFramebufferWidth() / (float) this.client.getWindow().getFramebufferHeight();
-     *         Matrix4f matrix = new Matrix4f();
-     *         cir.setReturnValue(mod.applyProjection(matrix, (float) fov, originalAspect, 0.05F, this.viewDistance * 4.0F));
-     *     }
-     * }
-     * }
-     * </pre>
-     *
-     * 2) Fog Color Mixin:
-     * Hook в {@code BackgroundRenderer.render(Camera camera, float tickDelta, ClientWorld world, ...)}
-     * где передаются цвета red, green, blue из модуля Ambience.
-     */
 }
