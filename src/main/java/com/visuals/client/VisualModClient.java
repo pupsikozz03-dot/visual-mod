@@ -127,11 +127,41 @@ public ModuleManager getModuleManager() {
     return moduleManager;
 }
 
-public static void playSoundSafely(net.minecraft.sound.SoundEvent sound, float pitch) {
+public static void playSoundSafely(Object soundObj, float pitch) {
+    if (soundObj == null) return;
     try {
-        MinecraftClient.getInstance().getSoundManager().play(
-                PositionedSoundInstance.master(sound, pitch)
-        );
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc == null || mc.getSoundManager() == null) return;
+
+        Object soundInstance = null;
+        for (Method m : PositionedSoundInstance.class.getMethods()) {
+            if (Modifier.isStatic(m.getModifiers()) && m.getName().equals("master") && m.getParameterCount() == 2) {
+                Class<?>[] pTypes = m.getParameterTypes();
+                if (pTypes[1] == float.class) {
+                    if (pTypes[0].isAssignableFrom(soundObj.getClass())) {
+                        soundInstance = m.invoke(null, soundObj, pitch);
+                        break;
+                    }
+                    try {
+                        Method valMethod = soundObj.getClass().getMethod("value");
+                        Object inner = valMethod.invoke(soundObj);
+                        if (pTypes[0].isAssignableFrom(inner.getClass())) {
+                            soundInstance = m.invoke(null, inner, pitch);
+                            break;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
+
+        if (soundInstance != null) {
+            for (Method pm : mc.getSoundManager().getClass().getMethods()) {
+                if (pm.getName().equals("play") && pm.getParameterCount() == 1) {
+                    pm.invoke(mc.getSoundManager(), soundInstance);
+                    break;
+                }
+            }
+        }
     } catch (Throwable ignored) {}
 }
 
@@ -332,7 +362,7 @@ public static abstract class Module {
 }
 
 // ==========================================
-// МОДУЛИ RENDER & VISUALS (БЕЗ КРАШЕЙ)
+// МОДУЛИ RENDER & VISUALS
 // ==========================================
 public static class AspectRatioModule extends Module {
     public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "3:2", "Custom"));
@@ -371,7 +401,6 @@ public static class AspectRatioModule extends Module {
             float targetRatio = getRatio();
             double scale = fovScale.get();
             int fovModifier = (int) (originalFov * (1.777f / targetRatio) * scale);
-            // Строгий безопасный clamp от 30 до 110, чтобы движок не ругался на Illegal Option Value
             client.options.getFov().setValue(MathHelper.clamp(fovModifier, 30, 110));
         }
     }
@@ -418,7 +447,6 @@ public static class AmbienceModule extends Module {
             default -> customTime.get().longValue();
         };
 
-        // Безопасная установка времени суток через reflection без падений
         safeSetWorldTime(client.world, targetTime);
 
         if (clearWeather.get()) {
@@ -444,7 +472,6 @@ public static class AmbienceModule extends Module {
         } catch (Throwable ignored) {}
 
         try {
-            // Попытка через WorldProperties
             Method getProps = world.getClass().getMethod("getLevelProperties");
             Object props = getProps.invoke(world);
             for (Method m : props.getClass().getMethods()) {
@@ -466,7 +493,6 @@ public static class FullBrightModule extends Module {
     @Override
     public void onTick(MinecraftClient client) {
         if (!isEnabled() || client.player == null) return;
-        // Идеальное ночное зрение без спама в лог и без изменения ванильной гаммы
         try {
             client.player.addStatusEffect(new StatusEffectInstance(StatusEffects.NIGHT_VISION, 200, 0, false, false, false));
         } catch (Throwable ignored) {}
@@ -585,7 +611,7 @@ public static class AntiBlindnessModule extends Module {
     public final BooleanSetting nausea = new BooleanSetting("Искажение портала", true);
 
     public AntiBlindnessModule() {
-        super("AntiBlindness", "Очищает экран от эффектов слепоты, тьмы и укачивания", Category.REMOVALS);
+        super("AntiBlindness", "Очищает экран от эффектов слепоты, тмы и укачивания", Category.REMOVALS);
         registerSetting(blindness);
         registerSetting(darkness);
         registerSetting(nausea);
@@ -797,14 +823,13 @@ public static class ModuleManager {
 }
 
 // ==========================================
-// КРАСИВЫЙ CLICKGUI КАК НА РЕФЕРЕНСЕ
+// CLICKGUI
 // ==========================================
 public static class ModernRefinedClickGui extends Screen {
     private final ModuleManager moduleManager;
     private final List<GuiColumn> columns = new ArrayList<>();
     public static String hoveredDescription = "";
 
-    // Прямой опрос состояния мыши для 100% срабатывания
     private boolean wasLeftPressed = false;
     private boolean wasRightPressed = false;
     private boolean wasMiddlePressed = false;
@@ -835,20 +860,15 @@ public static class ModernRefinedClickGui extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        // Мягкое полупрозрачное затемнение заднего плана
         context.fill(0, 0, this.width, this.height, 0x66000000);
 
         hoveredDescription = "";
-
-        // Обработка кликов мыши (ЛКМ, ПКМ, СКМ)
         handleMouseInput(mouseX, mouseY);
 
-        // Рендер 5 высоких колонок
         for (GuiColumn col : columns) {
             col.render(context, mouseX, mouseY);
         }
 
-        // ВЕРХНЯЯ СТРОКА ОПИСАНИЯ ПО ЦЕНТРУ ЭКРАНА (БЕЗ РАМОК, ЧИСТЫЙ ТЕКСТ КАК НА СКРИНШОТЕ)
         MinecraftClient mc = MinecraftClient.getInstance();
         if (!hoveredDescription.isEmpty()) {
             int textW = mc.textRenderer.getWidth(hoveredDescription);
@@ -868,13 +888,8 @@ public static class ModernRefinedClickGui extends Screen {
         boolean rightDown = GLFW.glfwGetMouseButton(handle, GLFW.GLFW_MOUSE_BUTTON_2) == GLFW.GLFW_PRESS;
         boolean middleDown = GLFW.glfwGetMouseButton(handle, GLFW.GLFW_MOUSE_BUTTON_3) == GLFW.GLFW_PRESS;
 
-        // ЛКМ: переключение модуля или слайдер
         if (leftDown && !wasLeftPressed) dispatchClick(mouseX, mouseY, 0);
-
-        // ПКМ: настройки модуля
         if (rightDown && !wasRightPressed) dispatchClick(mouseX, mouseY, 1);
-
-        // СКМ (Колёсико): назначение бинда!
         if (middleDown && !wasMiddlePressed) dispatchClick(mouseX, mouseY, 2);
 
         if (leftDown) {
@@ -905,7 +920,6 @@ public static class ModernRefinedClickGui extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        // Если какой-то модуль ждет бинда
         for (Module m : moduleManager.getAllModules()) {
             if (m.isListeningForBind()) {
                 if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_DELETE) {
@@ -946,12 +960,10 @@ public static class ModernRefinedClickGui extends Screen {
     }
 
     public static void drawSmoothRect(DrawContext context, int x, int y, int w, int h, int bg, int border) {
-        // Полупрозрачный фон
         context.fill(x + 1, y, x + w - 1, y + h, bg);
         context.fill(x, y + 1, x + 1, y + h - 1, bg);
         context.fill(x + w - 1, y + 1, x + w, y + h - 1, bg);
 
-        // Тонкая аккуратная рамка
         if (border != 0) {
             context.fill(x + 1, y, x + w - 1, y + 1, border);
             context.fill(x + 1, y + h - 1, x + w - 1, y + h, border);
@@ -962,7 +974,7 @@ public static class ModernRefinedClickGui extends Screen {
 }
 
 // ==========================================
-// ВЕРТИКАЛЬНАЯ ВЫСОКАЯ ПАНЕЛЬ КАТЕГОРИИ
+// ВЕРТИКАЛЬНАЯ ПАНЕЛЬ КАТЕГОРИИ
 // ==========================================
 public static class GuiColumn {
     private final Category category;
@@ -1006,19 +1018,15 @@ public static class GuiColumn {
     public void render(DrawContext context, int mouseX, int mouseY) {
         MinecraftClient mc = MinecraftClient.getInstance();
 
-        // Матовое полупрозрачное стекло панели (как на оригинальном фото)
         ModernRefinedClickGui.drawSmoothRect(context, x, y, width, height, 0xCC111116, 0x26FFFFFF);
 
-        // Заголовок категории с иконкой
         String headerText = category.getIcon() + "  " + category.getDisplayName();
         int headerW = mc.textRenderer.getWidth(headerText);
         int titleX = x + (width - headerW) / 2;
         drawTextSafe(context, mc.textRenderer, headerText, titleX, y + 9, 0xFFFFFFFF, true);
 
-        // Тонкая разделительная линия
         context.fill(x + 8, y + 25, x + width - 8, y + 26, 0x1AFFFFFF);
 
-        // Карточки модулей со скроллом
         int currentY = y + 30 - scrollY;
         int clipTop = y + 28;
         int clipBottom = y + height - 4;
@@ -1056,7 +1064,7 @@ public static class GuiColumn {
 }
 
 // ==========================================
-// КАРТОЧКА МОДУЛЯ С БИНДОМ
+// КАРТОЧКА МОДУЛЯ
 // ==========================================
 public static class GuiModuleCard {
     private final Module module;
@@ -1101,30 +1109,25 @@ public static class GuiModuleCard {
             ModernRefinedClickGui.hoveredDescription = module.getDescription();
         }
 
-        // Фон карточки: активная подсвечивается индиго, неактивная - темная
         int bg = module.isEnabled() ? 0xDD3730A3 : (hovered ? 0xDD22222E : 0xB8171720);
         int border = module.isEnabled() ? 0xEE818CF8 : (hovered ? 0x44FFFFFF : 0x1AFFFFFF);
 
         ModernRefinedClickGui.drawSmoothRect(context, x, y, width, 23, bg, border);
 
-        // Текст названия
         int textColor = module.isEnabled() ? 0xFFFFFFFF : (hovered ? 0xFFE2E8F0 : 0xFF94A3B8);
         drawTextSafe(context, mc.textRenderer, module.getName(), x + 8, y + 7, textColor, false);
 
-        // Отображение бинда (если есть) или статус прослушивания
         String bindText = module.isListeningForBind() ? "§e[...]" : (module.getKeyBind() != GLFW.GLFW_KEY_UNKNOWN ? "§7[" + module.getBindName() + "]" : "");
         if (!bindText.isEmpty()) {
             int bindW = mc.textRenderer.getWidth(bindText);
             drawTextSafe(context, mc.textRenderer, bindText, x + width - bindW - 20, y + 7, 0xFFFFFFFF, false);
         }
 
-        // Иконка настроек "≡"
         if (!widgets.isEmpty()) {
             int iconColor = expanded ? 0xFF818CF8 : (hovered ? 0xFFD1D5DB : 0xFF64748B);
             drawTextSafe(context, mc.textRenderer, "≡", x + width - 14, y + 7, iconColor, false);
         }
 
-        // Выпадающий список настроек
         if (expanded) {
             int containerH = getTotalHeight() - 25;
             ModernRefinedClickGui.drawSmoothRect(context, x, y + 24, width, containerH, 0xEE0E0E14, 0x22FFFFFF);
@@ -1140,32 +1143,26 @@ public static class GuiModuleCard {
     public boolean mouseClicked(int mouseX, int mouseY, int button) {
         if (y < -500) return false;
 
-        // Клик по основной плашке
         if (mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 23) {
-            // СКМ (Колёсико мыши): установка бинда!
             if (button == 2) {
                 module.setListeningForBind(!module.isListeningForBind());
                 return true;
             }
 
-            // Клик по значку настроек "≡" справа
             if (mouseX >= x + width - 18) {
                 if (!widgets.isEmpty()) expanded = !expanded;
                 return true;
             }
 
             if (button == 0) {
-                // ЛКМ: включить / выключить
                 module.toggle();
                 return true;
             } else if (button == 1) {
-                // ПКМ: раскрыть параметры
                 if (!widgets.isEmpty()) expanded = !expanded;
                 return true;
             }
         }
 
-        // Клик по настройкам
         if (expanded) {
             int widgetY = y + 27;
             for (GuiSettingWidget w : widgets) {
@@ -1270,7 +1267,7 @@ public static class GuiModeWidget implements GuiSettingWidget {
 
     @Override
     public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-        if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 17) {
+        if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y + 8 && mouseY <= y + 17) {
             setting.cycle();
             return true;
         }
@@ -1298,7 +1295,7 @@ public static class GuiBooleanWidget implements GuiSettingWidget {
 
     @Override
     public boolean mouseClicked(int x, int y, int width, int mouseX, int mouseY, int button) {
-        if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 17) {
+        if (button == 0 && mouseX >= x && mouseX <= x + width && mouseY >= y + 3 && mouseY <= y + 17) {
             setting.toggle();
             return true;
         }
