@@ -7,17 +7,25 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.hud.InGameHud;
+import net.minecraft.client.gui.hud.InGameOverlayRenderer;
 import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
+import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.network.OtherClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.render.Camera;
+import net.minecraft.client.particle.Particle;
+import net.minecraft.client.particle.ParticleManager;
+import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.render.entity.PlayerEntityRenderer;
+import net.minecraft.client.render.item.HeldItemRenderer;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
@@ -25,6 +33,9 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.item.ItemStack;
+import net.minecraft.item.ShieldItem;
+import net.minecraft.particle.ParticleEffect;
+import net.minecraft.particle.ParticleTypes;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
@@ -39,6 +50,11 @@ import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -74,7 +90,6 @@ public class VisualModClient implements ClientModInitializer {
         cosmeticsGuiKey = registerKeyBindingSafely("key.visuals.cosmetics", GLFW.GLFW_KEY_RIGHT_SHIFT, "category.visuals");
         moduleManager.init();
 
-        // Отрисовка кастомного прицела и TargetHUD
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc == null || mc.player == null || mc.options.hudHidden) return;
@@ -752,7 +767,6 @@ public class VisualModClient implements ClientModInitializer {
 
             float age = entity.age + tickDelta;
             VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
-            Matrix4f posMat = matrices.peek().getPositionMatrix();
 
             String head = module.headItem.get();
             if (!head.equals("Off")) {
@@ -1423,7 +1437,6 @@ public class VisualModClient implements ClientModInitializer {
                 if (dummyCamera == null) return;
             }
 
-            // Передаем дельту поворота мыши с реального игрока на фрикам
             float deltaYaw = client.player.getYaw() - origYaw;
             float deltaPitch = client.player.getPitch() - origPitch;
 
@@ -1432,7 +1445,6 @@ public class VisualModClient implements ClientModInitializer {
             dummyCamera.setHeadYaw(dummyCamera.getYaw());
             dummyCamera.noClip = true;
 
-            // Фиксируем оригинальное тело на месте, чтобы оно не падало и не крутилось
             client.player.setVelocity(0, 0, 0);
             client.player.setPosition(origX, origY, origZ);
             client.player.setYaw(origYaw);
@@ -1440,7 +1452,6 @@ public class VisualModClient implements ClientModInitializer {
             client.player.setHeadYaw(origYaw);
             client.player.setBodyYaw(origYaw);
 
-            // 3D полет в стиле спектатора сквозь стены
             double sp = speed.get() * 0.45;
             double forward = 0;
             double strafe = 0;
@@ -1612,7 +1623,6 @@ public class VisualModClient implements ClientModInitializer {
 
             MinecraftClient mc = MinecraftClient.getInstance();
 
-            // Top cosmetics button
             int cosBtnW = 100;
             int cosBtnH = 18;
             int cosBtnX = this.width - cosBtnW - 14;
@@ -1755,7 +1765,6 @@ public class VisualModClient implements ClientModInitializer {
             drawStyledText(context, mc.textRenderer, "✦ COSMETICS STUDIO", 26, 18, 0xFF818CF8);
             drawStyledText(context, mc.textRenderer, "§7Управляйте своими клиентскими 3D аксессуарами", 26, 30, 0xFF94A3B8);
 
-            // Left Panel: 3D Player Viewport
             int viewX = 26;
             int viewY = 48;
             int viewW = this.width / 2 - 40;
@@ -1774,7 +1783,6 @@ public class VisualModClient implements ClientModInitializer {
             }
             drawStyledText(context, mc.textRenderer, "§8⟳ Зажмите ЛКМ на модели для вращения", viewX + (viewW - 170) / 2, viewY + viewH - 12, 0xFF64748B);
 
-            // Right Panel: Settings Cards
             int setX = this.width / 2;
             int setY = 48;
             int setW = this.width / 2 - 26;
@@ -1782,7 +1790,6 @@ public class VisualModClient implements ClientModInitializer {
 
             ModernRefinedClickGui.drawSmoothRect(context, setX, setY, setW, setH, 0xDD12111A, 0x22FFFFFF);
 
-            // Global Master Toggle
             boolean enabled = cosmeticsModule.isEnabled();
             int toggleBtnX = setX + 16;
             int toggleBtnY = setY + 14;
@@ -1794,14 +1801,12 @@ public class VisualModClient implements ClientModInitializer {
             ModernRefinedClickGui.drawSmoothRect(context, toggleBtnX, toggleBtnY, toggleBtnW, toggleBtnH, toggleBg, enabled ? 0xFF818CF8 : 0x44FFFFFF);
             drawStyledText(context, mc.textRenderer, enabled ? "✔ Аксессуары: Включены" : "✖ Аксессуары: Отключены", toggleBtnX + 12, toggleBtnY + 7, 0xFFFFFFFF);
 
-            // Setting items render
             int curY = toggleBtnY + 32;
             for (Setting<?> s : cosmeticsModule.getSettings()) {
                 drawSettingControl(context, s, setX + 16, curY, setW - 32, mouseX, mouseY);
                 curY += 28;
             }
 
-            // Back to ClickGUI Button
             int backBtnW = 100;
             int backBtnH = 18;
             int backBtnX = this.width - backBtnW - 26;
@@ -1816,30 +1821,37 @@ public class VisualModClient implements ClientModInitializer {
         private void drawEntityPreviewSafely(DrawContext context, int centerX, int centerY, int size, float mouseX, float mouseY, LivingEntity entity) {
             if (entity == null) return;
             try {
-                // Прямой вызов InventoryScreen.drawEntity для Yarn 1.21+
-                InventoryScreen.drawEntity(context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
-                return;
-            } catch (Throwable fallback) {
-                try {
-                    // Универсальный перебор методов InventoryScreen на случай кастомных обфускаций
-                    for (Method m : InventoryScreen.class.getDeclaredMethods()) {
-                        if (Modifier.isStatic(m.getModifiers())) {
-                            Class<?>[] p = m.getParameterTypes();
-                            if (p.length >= 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[p.length - 1])) {
-                                m.setAccessible(true);
-                                if (p.length == 10) {
-                                    m.invoke(null, context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
-                                    return;
-                                } else if (p.length == 7) {
-                                    m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
-                                    return;
-                                }
+                for (Method m : InventoryScreen.class.getDeclaredMethods()) {
+                    if (Modifier.isStatic(m.getModifiers())) {
+                        Class<?>[] p = m.getParameterTypes();
+                        if (p.length >= 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[p.length - 1])) {
+                            m.setAccessible(true);
+                            if (p.length == 10) {
+                                m.invoke(null, context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
+                                return;
+                            } else if (p.length == 8) {
+                                m.invoke(null, context, (float) centerX, (float) centerY, (float) size, null, null, null, entity);
+                                return;
+                            } else if (p.length == 7) {
+                                m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
+                                return;
                             }
                         }
                     }
+                }
+            } catch (Throwable ignored) {}
+
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (entity instanceof AbstractClientPlayerEntity player) {
+                try {
+                    Identifier skin = player.getSkinTextures().texture();
+                    if (skin != null) {
+                        context.drawTexture(skin, centerX - 32, centerY - 80, 64, 64, 8.0f, 8.0f, 8, 8, 64, 64);
+                        context.drawTexture(skin, centerX - 32, centerY - 80, 64, 64, 40.0f, 8.0f, 8, 8, 64, 64);
+                        return;
+                    }
                 } catch (Throwable ignored) {}
             }
-            MinecraftClient mc = MinecraftClient.getInstance();
             drawStyledText(context, mc.textRenderer, "[3D Preview]", centerX - 30, centerY - size, 0xFF818CF8);
         }
 
@@ -2287,6 +2299,152 @@ public class VisualModClient implements ClientModInitializer {
                 return true;
             }
             return false;
+        }
+    }
+}
+
+
+@Mixin(GameRenderer.class)
+class MixinGameRenderer {
+    @Inject(method = "getBasicProjectionMatrix", at = @At("RETURN"), cancellable = true)
+    private void injectAspectRatio(double fov, CallbackInfoReturnable<Matrix4f> cir) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.AspectRatioModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.AspectRatioModule.class);
+        if (module != null && module.isEnabled()) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            float originalRatio = (float) client.getWindow().getFramebufferWidth() / (float) client.getWindow().getFramebufferHeight();
+            float targetRatio = module.getRatio();
+
+            Matrix4f matrix = new Matrix4f(cir.getReturnValue());
+            matrix.scale(originalRatio / targetRatio, 1.0f, 1.0f);
+            cir.setReturnValue(matrix);
+        }
+    }
+
+    @Inject(method = "tiltViewWhenHurt", at = @At("HEAD"), cancellable = true)
+    private void injectNoHurtCam(MatrixStack matrices, float tickDelta, CallbackInfo ci) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.NoHurtCamModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoHurtCamModule.class);
+        if (module != null && module.isEnabled()) {
+            ci.cancel();
+        }
+    }
+}
+
+@Mixin(InGameHud.class)
+class MixinInGameHud {
+    @Inject(method = "renderCrosshair", at = @At("HEAD"), cancellable = true)
+    private void injectHideVanillaCrosshair(DrawContext context, RenderTickCounter tickCounter, CallbackInfo ci) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.CrosshairModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.CrosshairModule.class);
+        if (module != null && module.isEnabled()) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "renderFloatingItem", at = @At("HEAD"), cancellable = true)
+    private void injectBlockTotemAnimation(DrawContext context, RenderTickCounter tickCounter, CallbackInfo ci) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.NoRenderModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoRenderModule.class);
+        if (module != null && module.isEnabled() && module.totemAnimation.get()) {
+            ci.cancel();
+        }
+    }
+}
+
+@Mixin(InGameOverlayRenderer.class)
+class MixinInGameOverlayRenderer {
+    @Inject(method = "renderFireOverlay", at = @At("HEAD"), cancellable = true)
+    private static void injectLowFire(MatrixStack matrices, VertexConsumerProvider vertexConsumers, CallbackInfo ci) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.LowFireModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.LowFireModule.class);
+        if (module != null && module.isEnabled()) {
+            double h = module.height.get();
+            if (h <= 0.01) {
+                ci.cancel();
+            } else {
+                float offsetY = (float) -(1.0 - h) * 0.45f;
+                matrices.translate(0.0f, offsetY, 0.0f);
+            }
+        }
+    }
+}
+
+@Mixin(HeldItemRenderer.class)
+class MixinHeldItemRenderer {
+    @Inject(method = "renderFirstPersonItem", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/util/math/MatrixStack;push()V", shift = At.Shift.AFTER))
+    private void injectLowShield(AbstractClientPlayerEntity player, float tickDelta, float pitch, Hand hand, float swingProgress, ItemStack item, float equipProgress, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
+        if (hand == Hand.OFF_HAND && item.getItem() instanceof ShieldItem) {
+            if (VisualModClient.INSTANCE == null) return;
+            VisualModClient.LowShieldModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.LowShieldModule.class);
+            if (module != null && module.isEnabled()) {
+                float shiftY = (float) -module.offsetY.get();
+                float sc = (float) module.scale.get();
+                matrices.translate(0.0f, shiftY, 0.0f);
+                matrices.scale(sc, sc, sc);
+            }
+        }
+    }
+}
+
+@Mixin(ParticleManager.class)
+class MixinParticleManager {
+    @Inject(method = "addParticle(Lnet/minecraft/particle/ParticleEffect;DDDDDD)Lnet/minecraft/client/particle/Particle;", at = @At("HEAD"), cancellable = true)
+    private void injectFilterExplosionParticles(ParticleEffect parameters, double x, double y, double z, double vx, double vy, double vz, CallbackInfoReturnable<Particle> cir) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.NoRenderModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoRenderModule.class);
+        if (module != null && module.isEnabled() && module.explosions.get()) {
+            if (parameters.getType() == ParticleTypes.EXPLOSION || parameters.getType() == ParticleTypes.EXPLOSION_EMITTER) {
+                cir.setReturnValue(null);
+            }
+        }
+    }
+}
+
+@Mixin(Entity.class)
+class MixinEntity {
+    @Inject(method = "getTargetingMargin", at = @At("RETURN"), cancellable = true)
+    private void injectHitboxMargin(CallbackInfoReturnable<Float> cir) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.HitBoxesModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.HitBoxesModule.class);
+        if (module != null && module.isEnabled()) {
+            cir.setReturnValue(cir.getReturnValue() + module.getExpansion());
+        }
+    }
+}
+
+@Mixin(ClientPlayerEntity.class)
+class MixinClientPlayerEntity {
+    @Inject(method = "setVelocityClient", at = @At("HEAD"), cancellable = true)
+    private void injectVelocity(double x, double y, double z, CallbackInfo ci) {
+        if (VisualModClient.INSTANCE == null) return;
+        VisualModClient.VelocityModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.VelocityModule.class);
+        if (module != null && module.isEnabled()) {
+            ClientPlayerEntity player = (ClientPlayerEntity) (Object) this;
+            double horiz = module.horizontal.get();
+            double vert = module.vertical.get();
+
+            if (horiz == 0.0 && vert == 0.0) {
+                ci.cancel();
+            } else {
+                player.setVelocity(x * horiz, y * vert, z * horiz);
+                ci.cancel();
+            }
+        }
+    }
+}
+
+@Mixin(PlayerEntityRenderer.class)
+class MixinPlayerEntityRenderer {
+    @Inject(method = "render", at = @At("RETURN"))
+    private void injectCosmeticsAndChinaHat(AbstractClientPlayerEntity entity, float yaw, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
+        VisualModClient.CosmeticsRenderer.renderCosmetics(entity, tickDelta, matrices, vertexConsumers, light);
+
+        if (VisualModClient.INSTANCE != null) {
+            VisualModClient.ChinaHatModule hatMod = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.ChinaHatModule.class);
+            if (hatMod != null && hatMod.isEnabled()) {
+                VisualModClient.CosmeticsRenderer.renderStandaloneChinaHat(entity, tickDelta, matrices, vertexConsumers, hatMod);
+            }
         }
     }
 }
