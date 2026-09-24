@@ -6,7 +6,6 @@
   "client": [
     "ModMixins$MixinGameRenderer",
     "ModMixins$MixinInGameHud",
-    "ModMixins$MixinLivingEntityRenderer",
     "ModMixins$MixinTitleScreen"
   ],
   "injectors": {
