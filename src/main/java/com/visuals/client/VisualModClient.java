@@ -2322,7 +2322,11 @@ public class VisualModClient implements ClientModInitializer {
             final Runnable action;
 
             public GraphicPresetButton(String label, float x, float y, float w, float h, Runnable action) {
-                this.label = label; this.x = x; this.y = y; this.w = w; this.h = h;
+                this.label = label;
+                this.x = x;
+                this.y = y;
+                this.w = w;
+                this.h = h;
                 this.action = action;
             }
         }
