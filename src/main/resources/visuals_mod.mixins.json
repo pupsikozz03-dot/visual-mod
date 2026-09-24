@@ -1,13 +1,13 @@
 {
   "required": true,
   "minVersion": "0.8",
-  "package": "com.visuals.client",
+  "package": "com.visuals.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "VisualModClient$MixinGameRenderer",
-    "VisualModClient$MixinInGameHud",
-    "VisualModClient$MixinPlayerEntityRenderer",
-    "VisualModClient$MixinTitleScreen"
+    "ModMixins$MixinGameRenderer",
+    "ModMixins$MixinInGameHud",
+    "ModMixins$MixinPlayerEntityRenderer",
+    "ModMixins$MixinTitleScreen"
   ],
   "injectors": {
     "defaultRequire": 1
