@@ -574,12 +574,14 @@ public class VisualModClient implements ClientModInitializer {
             setEnabled(true);
         }
 
-        public void renderPlayerCosmetics(AbstractClientPlayerEntity player, MatrixStack matrices, VertexConsumerProvider vertexConsumers, float tickDelta) {
+        public void renderCosmeticsFromState(MatrixStack matrices, VertexConsumerProvider vertexConsumers) {
             if (!isEnabled()) return;
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.player == null) return;
 
             long time = System.currentTimeMillis();
             float flap = MathHelper.sin((time % 2000) / 2000.0f * (float) Math.PI * 2.0f) * 0.45f;
-            if (player.forwardSpeed > 0 || player.sidewaysSpeed > 0) flap *= 1.8f;
+            if (mc.player.forwardSpeed != 0 || mc.player.sidewaysSpeed != 0) flap *= 1.8f;
 
             matrices.push();
 
@@ -612,7 +614,7 @@ public class VisualModClient implements ClientModInitializer {
             if (enableCape.get()) {
                 matrices.push();
                 matrices.translate(0.0, 0.0, 0.15);
-                float speedTilt = (player.forwardSpeed != 0 || player.sidewaysSpeed != 0) ? 0.45f : 0.08f;
+                float speedTilt = (mc.player.forwardSpeed != 0 || mc.player.sidewaysSpeed != 0) ? 0.45f : 0.08f;
                 matrices.multiply(RotationAxis.POSITIVE_X.rotation(speedTilt + MathHelper.sin(time / 250.0f) * 0.05f));
 
                 int capeColor = switch (capeStyle.get()) {
@@ -629,7 +631,7 @@ public class VisualModClient implements ClientModInitializer {
             String head = headAccessory.get();
             if (!head.equals("None")) {
                 matrices.push();
-                matrices.translate(0.0, player.getEyeHeight(player.getPose()) + 0.35, 0.0);
+                matrices.translate(0.0, mc.player.getEyeHeight(mc.player.getPose()) + 0.35, 0.0);
 
                 if (head.equals("Halo")) {
                     matrices.multiply(RotationAxis.POSITIVE_Y.rotation(time / 600.0f));
@@ -2346,7 +2348,8 @@ public class VisualModClient implements ClientModInitializer {
             float x, y, size, speed, alpha;
 
             public BackgroundStar(float x, float y, float size, float speed, float alpha) {
-                this.x = x; this.y = y; this.size = size; this.speed = speed; this.alpha = alpha;
+                this.x = x; this.y = y; this.size = size;
+                this.speed = speed; this.alpha = alpha;
             }
 
             public void update(float delta, int physW, int physH) {
