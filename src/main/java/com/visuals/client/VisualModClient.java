@@ -1986,7 +1986,6 @@ public class VisualModClient implements ClientModInitializer {
             int physW = this.width;
             int physH = this.height;
 
-            // Рендер фона с облаками
             drawBackgroundTexture(context, physW, physH);
 
             context.fill(0, 0, physW, physH, COLOR_BG_OVERLAY);
@@ -2018,7 +2017,6 @@ public class VisualModClient implements ClientModInitializer {
                 RenderSystem.defaultBlendFunc();
                 RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
 
-                // Отрисовка фоновой текстуры напрямую через 1.21.x DrawContext API
                 boolean rendered = false;
                 for (Method m : DrawContext.class.getMethods()) {
                     if (m.getName().equals("drawTexture") && m.getParameterCount() == 10) {
@@ -2031,11 +2029,9 @@ public class VisualModClient implements ClientModInitializer {
                     }
                 }
                 if (!rendered) {
-                    // Fallback для стандартной перегрузки
                     context.drawTexture(java.util.function.Function.identity() != null ? net.minecraft.client.render.RenderLayer::getGuiTextured : null, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
                 }
             } catch (Throwable t) {
-                // Если картинка не найдена в ресурсах, плавная темная подложка
                 context.fill(0, 0, w, h, 0xFF140F2D);
             }
         }
@@ -2286,8 +2282,7 @@ public class VisualModClient implements ClientModInitializer {
             float x, y, size, speed, alpha;
 
             public BackgroundStar(float x, float y, float size, float speed, float alpha) {
-                this.x = x; this.y = y; this.size = size;
-                this.speed = speed; this.alpha = alpha;
+                this.x = x; this.y = y; this.size = size; this.speed = speed; this.alpha = alpha;
             }
 
             public void update(float delta, int physW, int physH) {
@@ -2321,3 +2316,4 @@ public class VisualModClient implements ClientModInitializer {
             }
         }
     }
+}
