@@ -14,9 +14,9 @@ import net.minecraft.client.gui.screen.multiplayer.MultiplayerScreen;
 import net.minecraft.client.gui.screen.option.OptionsScreen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
-import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.OtherClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.client.util.math.MatrixStack;
@@ -24,7 +24,6 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
-import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
@@ -32,7 +31,6 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.RotationAxis;
@@ -252,9 +250,6 @@ public class VisualModClient implements ClientModInitializer {
         } catch (Throwable ignored) {}
     }
 
-    // ==========================================
-    // КАТЕГОРИИ
-    // ==========================================
     public enum Category {
         COMBAT("Combat", "⚔"),
         MOVEMENT("Movement", "»"),
@@ -274,9 +269,6 @@ public class VisualModClient implements ClientModInitializer {
         public String getIcon() { return icon; }
     }
 
-    // ==========================================
-    // НАСТРОЙКИ
-    // ==========================================
     public static abstract class Setting<T> {
         protected final String name;
         protected T value;
@@ -339,9 +331,6 @@ public class VisualModClient implements ClientModInitializer {
         public List<String> getModes() { return modes; }
     }
 
-    // ==========================================
-    // БАЗОВЫЙ МОДУЛЬ
-    // ==========================================
     public static abstract class Module {
         private final String name;
         private final String description;
@@ -404,9 +393,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // МОДУЛИ МОДА
-    // ==========================================
     public static class AspectRatioModule extends Module {
         public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "3:2", "Custom"));
         public final SliderSetting customRatio = new SliderSetting("Кастомный Aspect", 1.33, 0.50, 2.40, 0.05, "");
@@ -684,7 +670,9 @@ public class VisualModClient implements ClientModInitializer {
             RenderSystem.enableBlend();
             RenderSystem.defaultBlendFunc();
             RenderSystem.disableCull();
-            RenderSystem.setShader(net.minecraft.client.gl.ShaderProgramKeys.POSITION_COLOR);
+
+            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
             net.minecraft.client.render.Tessellator tess = net.minecraft.client.render.Tessellator.getInstance();
             net.minecraft.client.render.BufferBuilder buf = tess.begin(net.minecraft.client.render.VertexFormat.DrawMode.QUADS, net.minecraft.client.render.VertexFormats.POSITION_COLOR);
 
@@ -1217,9 +1205,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // МОДУЛЬНЫЙ МЕНЕДЖЕР
-    // ==========================================
     public static class ModuleManager {
         private final List<Module> modules = new ArrayList<>();
 
@@ -1281,9 +1266,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // CLICKGUI ЭКРАН
-    // ==========================================
     public static class ModernRefinedClickGui extends Screen {
         private final ModuleManager moduleManager;
         private final List<GuiColumn> columns = new ArrayList<>();
@@ -1726,9 +1708,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // COSMETICS STUDIO ЭКРАН
-    // ==========================================
     public static class CosmeticsScreen extends Screen {
         private final ModuleManager moduleManager;
         private float playerRotation = 0.0f;
@@ -1762,10 +1741,6 @@ public class VisualModClient implements ClientModInitializer {
             int previewH = this.height - 74;
 
             ModernRefinedClickGui.drawSmoothRect(context, previewX, previewY, previewW, previewH, 0x99111019, 0x336366F1);
-
-            int centerX = previewX + previewW / 2;
-            int centerY = previewY + previewH - 30;
-            int size = (int) (previewH * 0.45f);
 
             drawTextSafe(context, mc.textRenderer, "3D Персонаж", previewX + 14, previewY + 14, 0xFFE2E8F0, false);
             drawTextSafe(context, mc.textRenderer, "Зажмите ЛКМ на модели для вращения", previewX + 14, previewY + previewH - 18, 0xFF64748B, false);
@@ -1943,9 +1918,6 @@ public class VisualModClient implements ClientModInitializer {
         public boolean shouldPause() { return false; }
     }
 
-    // =========================================================================
-    // ГЛАВНОЕ МЕНЮ (CUSTOM MAIN MENU) ПО СУРСУ И СКРИНШОТУ
-    // =========================================================================
     public static class CustomTitleScreen extends Screen {
         private static final float BTN_W = 210.0f;
         private static final float BTN_H = 34.0f;
@@ -2101,7 +2073,6 @@ public class VisualModClient implements ClientModInitializer {
             int physW = this.width;
             int physH = this.height;
 
-            // 1. Отрисовка фиолетового облачного фона
             try {
                 RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
                 context.drawTexture(CLOUD_BG, 0, 0, 0, 0.0f, 0.0f, physW, physH, physW, physH);
@@ -2109,21 +2080,14 @@ public class VisualModClient implements ClientModInitializer {
                 context.fill(0, 0, physW, physH, 0xFF140F2D);
             }
 
-            // 2. Полупрозрачный темный оверлей
             context.fill(0, 0, physW, physH, COLOR_BG_OVERLAY);
-
-            // 3. Параллакс-сетка из сурса
             drawTransparentPurpleGrid(context, physW, physH, mouseX, mouseY);
-
-            // 4. Падающие звёзды
             drawBackgroundStars(context, physW, physH, delta);
 
-            // 5. Виньетка
             int topDark = (vignetteAlpha / 2) << 24 | 0x070614;
             int botDark = vignetteAlpha << 24 | 0x070614;
             context.fillGradient(0, 0, physW, physH, topDark, botDark);
 
-            // 6. Анимация входа
             this.openProgress = Math.min(1.0f, this.openProgress + delta * 3.5f);
             float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
             float offsetY = (1.0f - eased) * ENTER_OFFSET_Y;
@@ -2134,14 +2098,9 @@ public class VisualModClient implements ClientModInitializer {
             context.getMatrices().push();
             context.getMatrices().translate(0.0f, offsetY, 0.0f);
 
-            // 7. Заголовок и приветствие
             drawGreetingHeader(context, physW);
-
-            // 8. Кнопки
             drawMainButtons(context, mouseX, mouseY - offsetY, delta);
             drawPresetButtons(context, mouseX, mouseY - offsetY, delta);
-
-            // 9. Виджет информации
             drawSystemInfoWidget(context, physW, physH);
             drawDisclaimer(context, physH);
 
@@ -2428,9 +2387,6 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    // ==========================================
-    // ВСЕ МИКСИНЫ В ОДНОМ ФАЙЛЕ
-    // ==========================================
     @Mixin(net.minecraft.client.render.GameRenderer.class)
     public static class MixinGameRenderer {
         @Inject(method = "getBasicProjectionMatrix", at = @At("RETURN"), cancellable = true)
