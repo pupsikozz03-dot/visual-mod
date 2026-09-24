@@ -1972,6 +1972,11 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public boolean shouldPause() { return false; }
 
+        private float getOffsetY() {
+            float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
+            return (1.0f - eased) * ENTER_OFFSET_Y;
+        }
+
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float deltaTick) {
             long now = System.nanoTime();
@@ -1981,12 +1986,8 @@ public class VisualModClient implements ClientModInitializer {
             int physW = this.width;
             int physH = this.height;
 
-            try {
-                RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
-                context.drawTexture(CLOUD_BG, 0, 0, 0, 0.0f, 0.0f, physW, physH, physW, physH);
-            } catch (Throwable ignored) {
-                context.fill(0, 0, physW, physH, 0xFF140F2D);
-            }
+            // Рендер фона с облаками
+            drawBackgroundTexture(context, physW, physH);
 
             context.fill(0, 0, physW, physH, COLOR_BG_OVERLAY);
             drawTransparentPurpleGrid(context, physW, physH, mouseX, mouseY);
@@ -1997,8 +1998,7 @@ public class VisualModClient implements ClientModInitializer {
             context.fillGradient(0, 0, physW, physH, topDark, botDark);
 
             this.openProgress = Math.min(1.0f, this.openProgress + delta * 3.5f);
-            float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
-            float offsetY = (1.0f - eased) * ENTER_OFFSET_Y;
+            float offsetY = getOffsetY();
 
             updateAndDrawCursorParticles(context, mouseX, mouseY, delta);
             updateAndDrawClickSparks(context, delta);
@@ -2010,6 +2010,34 @@ public class VisualModClient implements ClientModInitializer {
             drawDisclaimer(context, physH, offsetY);
 
             super.render(context, mouseX, mouseY, deltaTick);
+        }
+
+        private void drawBackgroundTexture(DrawContext context, int w, int h) {
+            try {
+                RenderSystem.enableBlend();
+                RenderSystem.defaultBlendFunc();
+                RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
+
+                // Отрисовка фоновой текстуры напрямую через 1.21.x DrawContext API
+                boolean rendered = false;
+                for (Method m : DrawContext.class.getMethods()) {
+                    if (m.getName().equals("drawTexture") && m.getParameterCount() == 10) {
+                        Class<?>[] pts = m.getParameterTypes();
+                        if (pts[0] == Identifier.class && pts[1] == int.class && pts[2] == int.class) {
+                            m.invoke(context, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
+                            rendered = true;
+                            break;
+                        }
+                    }
+                }
+                if (!rendered) {
+                    // Fallback для стандартной перегрузки
+                    context.drawTexture(java.util.function.Function.identity() != null ? net.minecraft.client.render.RenderLayer::getGuiTextured : null, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
+                }
+            } catch (Throwable t) {
+                // Если картинка не найдена в ресурсах, плавная темная подложка
+                context.fill(0, 0, w, h, 0xFF140F2D);
+            }
         }
 
         private void drawTransparentPurpleGrid(DrawContext context, int physW, int physH, float mx, float my) {
@@ -2156,9 +2184,7 @@ public class VisualModClient implements ClientModInitializer {
         public boolean mouseClicked(double mx, double my, int button) {
             if (button != 0) return super.mouseClicked(mx, my, button);
 
-            float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
-            float offsetY = (1.0f - eased) * ENTER_OFFSET_Y;
-
+            float offsetY = getOffsetY();
             spawnClickSparks((float) mx, (float) my);
 
             for (MenuButton btn : this.mainButtons) {
@@ -2260,7 +2286,8 @@ public class VisualModClient implements ClientModInitializer {
             float x, y, size, speed, alpha;
 
             public BackgroundStar(float x, float y, float size, float speed, float alpha) {
-                this.x = x; this.y = y; this.size = size; this.speed = speed; this.alpha = alpha;
+                this.x = x; this.y = y; this.size = size;
+                this.speed = speed; this.alpha = alpha;
             }
 
             public void update(float delta, int physW, int physH) {
@@ -2294,4 +2321,3 @@ public class VisualModClient implements ClientModInitializer {
             }
         }
     }
-}
