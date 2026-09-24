@@ -2331,4 +2331,3 @@ public class VisualModClient implements ClientModInitializer {
             }
         }
     }
-}
