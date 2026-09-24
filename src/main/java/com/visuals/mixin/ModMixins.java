@@ -5,8 +5,6 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.TitleScreen;
 import net.minecraft.client.render.RenderTickCounter;
-import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -27,24 +25,6 @@ public class ModMixins {
                 Matrix4f matrix = new Matrix4f();
                 matrix.perspective((float) Math.toRadians(fov), customAspect, 0.05f, 1000.0f);
                 cir.setReturnValue(matrix);
-            }
-        }
-
-        @Inject(method = "renderWorld", at = @At("TAIL"))
-        private void onRenderWorld(RenderTickCounter tickCounter, CallbackInfo ci) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player == null || mc.world == null || VisualModClient.INSTANCE == null) return;
-
-            VisualModClient.CosmeticsModule cosm = (VisualModClient.CosmeticsModule) VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.CosmeticsModule.class);
-            if (cosm != null && cosm.isEnabled()) {
-                MatrixStack matrices = new MatrixStack();
-                Vec3d cameraPos = mc.gameRenderer.getCamera().getPos();
-                Vec3d playerPos = mc.player.getLerpedPos(tickCounter.getTickDelta(false));
-
-                matrices.push();
-                matrices.translate(playerPos.x - cameraPos.x, playerPos.y - cameraPos.y, playerPos.z - cameraPos.z);
-                cosm.renderCosmeticsInWorld(matrices, mc.player, tickCounter.getTickDelta(false));
-                matrices.pop();
             }
         }
     }
