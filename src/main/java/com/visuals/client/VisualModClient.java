@@ -1,5 +1,6 @@
 package com.visuals.client;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -7,35 +8,24 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.hud.InGameHud;
-import net.minecraft.client.gui.hud.InGameOverlayRenderer;
-import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.ingame.InventoryScreen;
+import net.minecraft.client.gui.screen.TitleScreen;
+import net.minecraft.client.gui.screen.multiplayer.MultiplayerScreen;
+import net.minecraft.client.gui.screen.option.OptionsScreen;
+import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.network.OtherClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.particle.Particle;
-import net.minecraft.client.particle.ParticleManager;
-import net.minecraft.client.render.GameRenderer;
-import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.RenderTickCounter;
-import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.entity.PlayerEntityRenderer;
-import net.minecraft.client.render.item.HeldItemRenderer;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.ShieldItem;
-import net.minecraft.particle.ParticleEffect;
-import net.minecraft.particle.ParticleTypes;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.util.Hand;
@@ -43,7 +33,6 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.RotationAxis;
@@ -60,9 +49,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Random;
+import java.time.LocalTime;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -75,52 +63,36 @@ public class VisualModClient implements ClientModInitializer {
     private static boolean textRendererInitialized = false;
 
     private KeyBinding clickGuiKey;
-    private KeyBinding cosmeticsGuiKey;
+    private KeyBinding cosmeticsKey;
     private final ModuleManager moduleManager = new ModuleManager();
     private boolean wasInsertKeyDown = false;
     private boolean wasRShiftKeyDown = false;
-    private final boolean[] keyStates = new boolean[512];
 
-    public static LivingEntity currentCombatTarget = null;
+    private final boolean[] keyStates = new boolean[512];
 
     @Override
     public void onInitializeClient() {
         INSTANCE = this;
+
         clickGuiKey = registerKeyBindingSafely("key.visuals.clickgui", GLFW.GLFW_KEY_INSERT, "category.visuals");
-        cosmeticsGuiKey = registerKeyBindingSafely("key.visuals.cosmetics", GLFW.GLFW_KEY_RIGHT_SHIFT, "category.visuals");
+        cosmeticsKey = registerKeyBindingSafely("key.visuals.cosmetics", GLFW.GLFW_KEY_RIGHT_SHIFT, "category.visuals");
         moduleManager.init();
 
-        HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc == null || mc.player == null || mc.options.hudHidden) return;
-
-            CrosshairModule ch = moduleManager.getModule(CrosshairModule.class);
-            if (ch != null && ch.isEnabled()) {
-                ch.renderCrosshair(drawContext, mc.getWindow().getScaledWidth(), mc.getWindow().getScaledHeight());
-            }
-
-            TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
-            if (th != null && th.isEnabled()) {
-                th.render(drawContext, mc);
-            }
-        });
-
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            boolean openClickGuiRequested = false;
+            boolean openRequested = false;
             boolean openCosmeticsRequested = false;
 
-            if (clickGuiKey != null && clickGuiKey.wasPressed()) openClickGuiRequested = true;
-            if (cosmeticsGuiKey != null && cosmeticsGuiKey.wasPressed()) openCosmeticsRequested = true;
+            if (clickGuiKey != null && clickGuiKey.wasPressed()) openRequested = true;
+            if (cosmeticsKey != null && cosmeticsKey.wasPressed()) openCosmeticsRequested = true;
 
             if (client.getWindow() != null && client.getWindow().getHandle() != 0) {
                 long handle = client.getWindow().getHandle();
                 boolean isInsertDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_INSERT) == GLFW.GLFW_PRESS;
-                boolean isRShiftDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-
-                if (isInsertDown && !wasInsertKeyDown) openClickGuiRequested = true;
-                if (isRShiftDown && !wasRShiftKeyDown) openCosmeticsRequested = true;
-
+                if (isInsertDown && !wasInsertKeyDown) openRequested = true;
                 wasInsertKeyDown = isInsertDown;
+
+                boolean isRShiftDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
+                if (isRShiftDown && !wasRShiftKeyDown) openCosmeticsRequested = true;
                 wasRShiftKeyDown = isRShiftDown;
 
                 if (client.currentScreen == null) {
@@ -138,7 +110,7 @@ public class VisualModClient implements ClientModInitializer {
                 }
             }
 
-            if (openClickGuiRequested && client.currentScreen == null) {
+            if (openRequested && client.currentScreen == null) {
                 client.setScreen(new ModernRefinedClickGui(moduleManager));
             } else if (openCosmeticsRequested && client.currentScreen == null) {
                 client.setScreen(new CosmeticsScreen(moduleManager));
@@ -146,22 +118,21 @@ public class VisualModClient implements ClientModInitializer {
 
             if (client.world != null && client.player != null) {
                 moduleManager.onTick(client);
+            }
+        });
 
-                TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
-                double maxRange = th != null ? th.maxDistance.get() : 24.0;
-                double maxRangeSq = maxRange * maxRange;
+        HudRenderCallback.EVENT.register((drawContext, renderTickCounter) -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.player == null || mc.options.hudHidden) return;
 
-                if (currentCombatTarget != null) {
-                    if (!currentCombatTarget.isAlive() || currentCombatTarget.isRemoved() || client.player.squaredDistanceTo(currentCombatTarget) > maxRangeSq) {
-                        currentCombatTarget = null;
-                    }
-                }
+            CrosshairModule cross = (CrosshairModule) moduleManager.getModule(CrosshairModule.class);
+            if (cross != null && cross.isEnabled()) {
+                cross.renderCustomCrosshair(drawContext, mc.getWindow().getScaledWidth(), mc.getWindow().getScaledHeight());
+            }
 
-                if (client.crosshairTarget instanceof EntityHitResult eHit && eHit.getEntity() instanceof LivingEntity living) {
-                    if (living.isAlive() && living != client.player && client.player.squaredDistanceTo(living) <= maxRangeSq) {
-                        currentCombatTarget = living;
-                    }
-                }
+            TargetHudModule thud = (TargetHudModule) moduleManager.getModule(TargetHudModule.class);
+            if (thud != null && thud.isEnabled()) {
+                thud.render(drawContext, mc);
             }
         });
     }
@@ -183,8 +154,8 @@ public class VisualModClient implements ClientModInitializer {
                         return binding;
                     }
                 }
-            } catch (Throwable fallback) {
-                System.out.println("[VisualMod] Direct GLFW polling active.");
+            } catch (Throwable fallbackErr) {
+                System.out.println("[VisualMod] Polling fallback active for key: " + translationKey);
             }
         }
         return null;
@@ -246,9 +217,7 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static void drawTextSafe(DrawContext context, Object textRenderer, String text, int x, int y, int color, boolean shadow) {
-        if (!textRendererInitialized) {
-            initDrawTextMethods();
-        }
+        if (!textRendererInitialized) initDrawTextMethods();
 
         if (cachedDrawTextString != null) {
             try {
@@ -263,10 +232,6 @@ public class VisualModClient implements ClientModInitializer {
                 return;
             } catch (Throwable ignored) {}
         }
-    }
-
-    public static void drawStyledText(DrawContext context, Object textRenderer, String text, int x, int y, int color) {
-        drawTextSafe(context, textRenderer, text, x, y, color, true);
     }
 
     private static void initDrawTextMethods() {
@@ -287,6 +252,9 @@ public class VisualModClient implements ClientModInitializer {
         } catch (Throwable ignored) {}
     }
 
+    // ==========================================
+    // КАТЕГОРИИ
+    // ==========================================
     public enum Category {
         COMBAT("Combat", "⚔"),
         MOVEMENT("Movement", "»"),
@@ -306,6 +274,9 @@ public class VisualModClient implements ClientModInitializer {
         public String getIcon() { return icon; }
     }
 
+    // ==========================================
+    // НАСТРОЙКИ
+    // ==========================================
     public static abstract class Setting<T> {
         protected final String name;
         protected T value;
@@ -326,7 +297,9 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class SliderSetting extends Setting<Double> {
-        private final double min, max, increment;
+        private final double min;
+        private final double max;
+        private final double increment;
         private final String suffix;
 
         public SliderSetting(String name, double defaultValue, double min, double max, double increment, String suffix) {
@@ -364,15 +337,11 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         public List<String> getModes() { return modes; }
-        public void setMode(String mode) {
-            int idx = modes.indexOf(mode);
-            if (idx != -1) {
-                this.index = idx;
-                this.value = mode;
-            }
-        }
     }
 
+    // ==========================================
+    // БАЗОВЫЙ МОДУЛЬ
+    // ==========================================
     public static abstract class Module {
         private final String name;
         private final String description;
@@ -408,8 +377,10 @@ public class VisualModClient implements ClientModInitializer {
         public Category getCategory() { return category; }
         public boolean isEnabled() { return enabled; }
         public List<Setting<?>> getSettings() { return settings; }
+
         public int getKeyBind() { return keyBind; }
         public void setKeyBind(int key) { this.keyBind = key; }
+
         public boolean isListeningForBind() { return listeningForBind; }
         public void setListeningForBind(boolean listening) { this.listeningForBind = listening; }
 
@@ -433,542 +404,15 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    public static class TriggerBotModule extends Module {
-        public final SliderSetting cooldown = new SliderSetting("Кулдаун", 0.95, 0.70, 1.0, 0.02, "%");
-        public final BooleanSetting critOnly = new BooleanSetting("Только криты", false);
-
-        public TriggerBotModule() {
-            super("TriggerBot", "Автоматический удар при наведении на цель с проверкой критов", Category.COMBAT);
-            registerSetting(cooldown);
-            registerSetting(critOnly);
-        }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.player == null || client.interactionManager == null) return;
-            if (client.player.getAttackCooldownProgress(0.0f) < cooldown.get().floatValue()) return;
-
-            if (critOnly.get() && !isPlayerReadyForCrit(client)) return;
-
-            Entity target = findTarget(client);
-            if (target instanceof LivingEntity living && living.isAlive() && target != client.player) {
-                currentCombatTarget = living;
-                client.interactionManager.attackEntity(client.player, target);
-                client.player.swingHand(Hand.MAIN_HAND);
-            }
-        }
-
-        private boolean isPlayerReadyForCrit(MinecraftClient client) {
-            if (client.player == null) return false;
-            return client.player.fallDistance > 0.0f
-                    && !client.player.isOnGround()
-                    && !client.player.isClimbing()
-                    && !client.player.isTouchingWater()
-                    && !client.player.hasStatusEffect(StatusEffects.BLINDNESS)
-                    && !client.player.hasVehicle()
-                    && !client.player.isSprinting();
-        }
-
-        public static Entity findTarget(MinecraftClient client) {
-            if (client.player == null || client.world == null) return null;
-
-            HitBoxesModule hb = VisualModClient.INSTANCE.getModuleManager().getModule(HitBoxesModule.class);
-            float expand = (hb != null && hb.isEnabled()) ? hb.getExpansion() : 0.0f;
-
-            Vec3d cameraPos = client.player.getCameraPosVec(1.0f);
-            Vec3d rot = client.player.getRotationVec(1.0f);
-            double reachDist = 3.8 + (expand > 0 ? expand + 0.5 : 0.0);
-            Vec3d reach = cameraPos.add(rot.multiply(reachDist));
-
-            Entity bestEntity = null;
-            double closestDistance = Double.MAX_VALUE;
-
-            for (Entity e : client.world.getEntities()) {
-                if (e instanceof LivingEntity living && living != client.player && living.isAlive()) {
-                    Box box = living.getBoundingBox().expand(expand);
-                    var hitOpt = box.raycast(cameraPos, reach);
-                    if (hitOpt.isPresent()) {
-                        double d = cameraPos.squaredDistanceTo(hitOpt.get());
-                        if (d < closestDistance) {
-                            closestDistance = d;
-                            bestEntity = living;
-                        }
-                    }
-                }
-            }
-
-            if (bestEntity != null) return bestEntity;
-
-            if (client.crosshairTarget instanceof EntityHitResult entityHit) {
-                return entityHit.getEntity();
-            }
-            return null;
-        }
-    }
-
-    public static class HitBoxesModule extends Module {
-        public final SliderSetting expand = new SliderSetting("Расширение", 0.35, 0.05, 1.50, 0.05, "m");
-
-        public HitBoxesModule() {
-            super("HitBoxes", "Увеличивает объем хитбоксов целей для попадания", Category.COMBAT);
-            registerSetting(expand);
-        }
-
-        public float getExpansion() {
-            return isEnabled() ? expand.get().floatValue() : 0.0f;
-        }
-    }
-
-    public static class TapeMouseModule extends Module {
-        public final SliderSetting minCps = new SliderSetting("Мин. CPS", 10.0, 4.0, 20.0, 1.0, "");
-        public final SliderSetting maxCps = new SliderSetting("Макс. CPS", 14.0, 6.0, 25.0, 1.0, "");
-
-        private long lastClickTime = 0;
-        private long currentDelayMs = 80;
-        private final Random random = new Random();
-
-        public TapeMouseModule() {
-            super("TapeMouse", "Эмуляция зажатия мыши с реалистичным разбросом CPS", Category.COMBAT);
-            registerSetting(minCps);
-            registerSetting(maxCps);
-        }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.player == null || client.interactionManager == null) return;
-            if (client.currentScreen != null) return;
-
-            long window = client.getWindow().getHandle();
-            boolean isAttackDown = client.options.attackKey.isPressed() || GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
-
-            if (isAttackDown) {
-                long now = System.currentTimeMillis();
-                if (now - lastClickTime >= currentDelayMs) {
-                    lastClickTime = now;
-
-                    double min = Math.min(minCps.get(), maxCps.get());
-                    double max = Math.max(minCps.get(), maxCps.get());
-                    double targetCps = min + (max - min) * random.nextDouble();
-                    currentDelayMs = (long) (1000.0 / Math.max(1.0, targetCps));
-
-                    Entity target = TriggerBotModule.findTarget(client);
-                    if (target != null) {
-                        client.interactionManager.attackEntity(client.player, target);
-                        if (target instanceof LivingEntity living) {
-                            currentCombatTarget = living;
-                        }
-                    } else if (client.crosshairTarget instanceof BlockHitResult bHit && bHit.getType() == HitResult.Type.BLOCK) {
-                        client.interactionManager.attackBlock(bHit.getBlockPos(), bHit.getSide());
-                    }
-                    client.player.swingHand(Hand.MAIN_HAND);
-                }
-            }
-        }
-    }
-
-    public static class VelocityModule extends Module {
-        public final SliderSetting horizontal = new SliderSetting("По горизонтали", 0.0, 0.0, 1.0, 0.05, "%");
-        public final SliderSetting vertical = new SliderSetting("По вертикали", 0.0, 0.0, 1.0, 0.05, "%");
-
-        public VelocityModule() {
-            super("Velocity", "Снижает или полностью убирает отдачу от ударов и стрел", Category.COMBAT);
-            registerSetting(horizontal);
-            registerSetting(vertical);
-        }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.player == null) return;
-            if (client.player.hurtTime > 0) {
-                double h = horizontal.get();
-                double v = vertical.get();
-                Vec3d vel = client.player.getVelocity();
-                client.player.setVelocity(vel.x * h, vel.y * v, vel.z * h);
-            }
-        }
-    }
-
-    public static class TargetHudModule extends Module {
-        public final SliderSetting xPos = new SliderSetting("Позиция X", 0.52, 0.05, 0.90, 0.01, "");
-        public final SliderSetting yPos = new SliderSetting("Позиция Y", 0.60, 0.05, 0.90, 0.01, "");
-        public final SliderSetting maxDistance = new SliderSetting("Макс. дистанция", 24.0, 6.0, 64.0, 2.0, "m");
-
-        private float currentDisplayHp = 20.0f;
-        private float secondaryHp = 20.0f;
-        private float absorptionDisplay = 0.0f;
-        private float alphaAnim = 0.0f;
-        private float lastHurtTime = 0.0f;
-
-        private final CopyOnWriteArrayList<Particle> particles = new CopyOnWriteArrayList<>();
-
-        public TargetHudModule() {
-            super("TargetHUD", "Информативная плашка цели с плавной полоской HP и ограничением дистанции", Category.RENDER);
-            registerSetting(xPos);
-            registerSetting(yPos);
-            registerSetting(maxDistance);
-        }
-
-        public void render(DrawContext context, MinecraftClient mc) {
-            LivingEntity target = currentCombatTarget;
-            boolean preview = (target == null && (mc.currentScreen instanceof ModernRefinedClickGui || mc.currentScreen instanceof CosmeticsScreen) && mc.player != null);
-            if (preview) target = mc.player;
-
-            double maxDist = maxDistance.get();
-            if (!preview && target != null && mc.player != null) {
-                double dSq = mc.player.squaredDistanceTo(target);
-                if (dSq > maxDist * maxDist) {
-                    target = null;
-                    currentCombatTarget = null;
-                }
-            }
-
-            boolean visible = target != null && target.isAlive();
-            alphaAnim = MathHelper.lerp(0.18f, alphaAnim, visible ? 1.0f : 0.0f);
-            if (alphaAnim < 0.02f) return;
-            if (target == null) return;
-
-            int sw = mc.getWindow().getScaledWidth();
-            int sh = mc.getWindow().getScaledHeight();
-            int x = (int) (sw * xPos.get());
-            int y = (int) (sh * yPos.get());
-
-            int w = 132;
-            int h = 42;
-
-            float realHp = target.getHealth();
-            float maxHp = Math.max(1.0f, target.getMaxHealth());
-            float realAbs = target.getAbsorptionAmount();
-
-            currentDisplayHp = MathHelper.lerp(0.16f, currentDisplayHp, realHp);
-            secondaryHp = MathHelper.lerp(0.08f, secondaryHp, realHp);
-            absorptionDisplay = MathHelper.lerp(0.16f, absorptionDisplay, realAbs);
-
-            if (target.hurtTime > 0 && target.hurtTime > lastHurtTime) {
-                for (int i = 0; i < 5; i++) {
-                    particles.add(new Particle(x + 19, y + 20));
-                }
-            }
-            lastHurtTime = target.hurtTime;
-
-            int alpha = (int) (alphaAnim * 255);
-            int bg = (Math.min(alpha, 0xD0) << 24) | 0x12111A;
-            int border = (Math.min(alpha, 0x60) << 24) | 0x818CF8;
-
-            ModernRefinedClickGui.drawSmoothRect(context, x, y, w, h, bg, border);
-
-            int headSize = 30;
-            int headX = x + 6;
-            int headY = y + 6;
-
-            boolean renderedSkin = false;
-            if (target instanceof AbstractClientPlayerEntity player) {
-                try {
-                    Identifier skin = player.getSkinTextures().texture();
-                    if (skin != null) {
-                        context.drawTexture(skin, headX, headY, headSize, headSize, 8.0f, 8.0f, 8, 8, 64, 64);
-                        context.drawTexture(skin, headX, headY, headSize, headSize, 40.0f, 8.0f, 8, 8, 64, 64);
-                        renderedSkin = true;
-                    }
-                } catch (Throwable ignored) {}
-            }
-
-            if (!renderedSkin) {
-                ModernRefinedClickGui.drawSmoothRect(context, headX, headY, headSize, headSize, 0x55252233, 0x33818CF8);
-                String letter = target.getName().getString().isEmpty() ? "?" : target.getName().getString().substring(0, 1).toUpperCase();
-                drawStyledText(context, mc.textRenderer, letter, headX + 11, headY + 10, 0xFFFFFFFF);
-            }
-
-            String name = target.getName().getString();
-            if (mc.textRenderer.getWidth(name) > 65) {
-                name = name.substring(0, Math.min(name.length(), 9)) + "..";
-            }
-            drawStyledText(context, mc.textRenderer, "§f" + name, x + 41, y + 6, 0xFFFFFFFF);
-
-            double dist = mc.player != null ? Math.sqrt(mc.player.squaredDistanceTo(target)) : 0.0;
-            String distStr = String.format("§8[§d%.1fm§8]", dist);
-            int distW = mc.textRenderer.getWidth(distStr);
-            drawStyledText(context, mc.textRenderer, distStr, x + w - distW - 6, y + 6, 0xFFE2E8F0);
-
-            int hpInt = (int) Math.ceil(currentDisplayHp);
-            int pctInt = (int) Math.round((currentDisplayHp / maxHp) * 100.0f);
-            String hpText = "§c❤ " + hpInt + "§7/§f" + (int) maxHp + " §8(§a" + pctInt + "%§8)";
-            drawStyledText(context, mc.textRenderer, hpText, x + 41, y + 17, 0xFFCBD5E1);
-
-            int barX = x + 41;
-            int barY = y + 29;
-            int barW = 84;
-            int barH = 5;
-
-            context.fill(barX, barY, barX + barW, barY + barH, 0xFF1D1B28);
-
-            float secPct = MathHelper.clamp(secondaryHp / maxHp, 0.0f, 1.0f);
-            context.fill(barX, barY, barX + (int) (barW * secPct), barY + barH, 0xFFEF4444);
-
-            float hpPct = MathHelper.clamp(currentDisplayHp / maxHp, 0.0f, 1.0f);
-            context.fill(barX, barY, barX + (int) (barW * hpPct), barY + barH, 0xFF6366F1);
-
-            if (absorptionDisplay > 0.1f) {
-                float absPct = MathHelper.clamp(absorptionDisplay / maxHp, 0.0f, 1.0f);
-                context.fill(barX, barY, barX + (int) (barW * absPct), barY + barH, 0xFFFACC15);
-            }
-
-            particles.removeIf(p -> System.currentTimeMillis() - p.startTime > p.lifetime);
-            for (Particle p : particles) {
-                p.update();
-                float prog = 1.0f - (float) (System.currentTimeMillis() - p.startTime) / (float) p.lifetime;
-                int pColor = (Math.max(10, (int) (prog * 255)) << 24) | 0x818CF8;
-                context.fill((int) p.x - 1, (int) p.y - 1, (int) p.x + 2, (int) p.y + 2, pColor);
-            }
-        }
-
-        public static class Particle {
-            public float x, y, vx, vy;
-            public final long startTime;
-            public final long lifetime;
-
-            public Particle(float originX, float originY) {
-                this.x = originX;
-                this.y = originY;
-                this.vx = ThreadLocalRandom.current().nextFloat(-2.0f, 2.0f);
-                this.vy = ThreadLocalRandom.current().nextFloat(-2.0f, 2.0f);
-                this.startTime = System.currentTimeMillis();
-                this.lifetime = 650L + ThreadLocalRandom.current().nextLong(350L);
-            }
-
-            public void update() {
-                x += vx;
-                y += vy;
-            }
-        }
-    }
-
-    public static class CosmeticsModule extends Module {
-        public final ModeSetting wings = new ModeSetting("Крылья", "Angel", List.of("Off", "Angel", "Dragon", "Demon", "Cyber"));
-        public final SliderSetting wingScale = new SliderSetting("Размах крыльев", 1.0, 0.6, 1.6, 0.05, "x");
-        public final ModeSetting cape = new ModeSetting("Плащ", "Pulse", List.of("Off", "Pulse", "Cosmo", "Fire", "Wave"));
-        public final ModeSetting headItem = new ModeSetting("Голова", "Halo", List.of("Off", "Halo", "ChinaHat", "Horns", "Crown"));
-        public final BooleanSetting katana = new BooleanSetting("Катана на спине", true);
-
-        public CosmeticsModule() {
-            super("Cosmetics", "Клиентские 3D аксессуары: крылья, нимб, плащ, катана и рога", Category.RENDER);
-            registerSetting(wings);
-            registerSetting(wingScale);
-            registerSetting(cape);
-            registerSetting(headItem);
-            registerSetting(katana);
-        }
-    }
-
-    public static class CosmeticsRenderer {
-        public static void renderCosmetics(AbstractClientPlayerEntity entity, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light) {
-            if (VisualModClient.INSTANCE == null) return;
-            CosmeticsModule module = VisualModClient.INSTANCE.getModuleManager().getModule(CosmeticsModule.class);
-            if (module == null || !module.isEnabled()) return;
-
-            float age = entity.age + tickDelta;
-            VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
-
-            String head = module.headItem.get();
-            if (!head.equals("Off")) {
-                matrices.push();
-                matrices.translate(0.0, entity.getHeight() + 0.12, 0.0);
-
-                if (head.equals("Halo")) {
-                    float bob = (float) Math.sin(age * 0.08f) * 0.04f;
-                    matrices.translate(0.0, 0.18 + bob, 0.0);
-                    matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(age * 2.0f));
-
-                    float rad = 0.32f;
-                    int segs = 20;
-                    Matrix4f hMat = matrices.peek().getPositionMatrix();
-                    for (int i = 0; i < segs; i++) {
-                        double a1 = (i * Math.PI * 2) / segs;
-                        double a2 = ((i + 1) * Math.PI * 2) / segs;
-                        float x1 = (float) (Math.cos(a1) * rad);
-                        float z1 = (float) (Math.sin(a1) * rad);
-                        float x2 = (float) (Math.cos(a2) * rad);
-                        float z2 = (float) (Math.sin(a2) * rad);
-
-                        buffer.vertex(hMat, x1, 0.0f, z1).color(255, 215, 0, 220);
-                        buffer.vertex(hMat, x2, 0.0f, z2).color(255, 215, 0, 220);
-                        buffer.vertex(hMat, x2 * 0.88f, 0.02f, z2 * 0.88f).color(255, 245, 140, 240);
-                        buffer.vertex(hMat, x1 * 0.88f, 0.02f, z1 * 0.88f).color(255, 245, 140, 240);
-                    }
-                } else if (head.equals("ChinaHat")) {
-                    renderConeHat(matrices, buffer, 0.65f, 0.28f, new int[]{129, 140, 248, 240});
-                } else if (head.equals("Horns")) {
-                    matrices.translate(0.0, -0.05, 0.0);
-                    Matrix4f hornMat = matrices.peek().getPositionMatrix();
-                    renderHorn(hornMat, buffer, 0.18f, 1);
-                    renderHorn(hornMat, buffer, -0.18f, -1);
-                } else if (head.equals("Crown")) {
-                    float r = 0.28f;
-                    float h = 0.12f;
-                    int segs = 6;
-                    Matrix4f cMat = matrices.peek().getPositionMatrix();
-                    for (int i = 0; i < segs; i++) {
-                        double a1 = (i * Math.PI * 2) / segs;
-                        double a2 = ((i + 1) * Math.PI * 2) / segs;
-                        float x1 = (float) (Math.cos(a1) * r);
-                        float z1 = (float) (Math.sin(a1) * r);
-                        float x2 = (float) (Math.cos(a2) * r);
-                        float z2 = (float) (Math.sin(a2) * r);
-                        float midX = (float) (Math.cos((a1 + a2) / 2) * r * 1.05);
-                        float midZ = (float) (Math.sin((a1 + a2) / 2) * r * 1.05);
-
-                        buffer.vertex(cMat, x1, 0.0f, z1).color(255, 215, 0, 255);
-                        buffer.vertex(cMat, x2, 0.0f, z2).color(255, 215, 0, 255);
-                        buffer.vertex(cMat, midX, h, midZ).color(255, 235, 59, 255);
-                        buffer.vertex(cMat, x1, 0.0f, z1).color(255, 215, 0, 255);
-                    }
-                }
-                matrices.pop();
-            }
-
-            String wingMode = module.wings.get();
-            if (!wingMode.equals("Off")) {
-                float sc = module.wingScale.get().floatValue();
-                matrices.push();
-                matrices.translate(0.0, entity.getHeight() * 0.65, 0.12);
-
-                float flap = (float) Math.sin(age * 0.22f) * 26.0f;
-                if (entity.isSprinting() || !entity.isOnGround()) flap *= 1.4f;
-
-                int[] col = switch (wingMode) {
-                    case "Dragon" -> new int[]{220, 38, 38, 150};
-                    case "Demon" -> new int[]{147, 51, 234, 190};
-                    case "Cyber" -> new int[]{6, 182, 212, 240};
-                    default -> new int[]{255, 255, 255, 220};
-                };
-
-                renderWing(matrices, buffer, sc, flap, 1, col);
-                renderWing(matrices, buffer, sc, -flap, -1, col);
-
-                matrices.pop();
-            }
-
-            if (module.katana.get()) {
-                matrices.push();
-                matrices.translate(0.08, entity.getHeight() * 0.58, 0.16);
-                matrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-45.0f));
-                matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(15.0f));
-                Matrix4f kMat = matrices.peek().getPositionMatrix();
-
-                float kw = 0.03f;
-                float kh = 0.95f;
-                buffer.vertex(kMat, -kw, 0.0f, 0.0f).color(30, 27, 46, 255);
-                buffer.vertex(kMat, kw, 0.0f, 0.0f).color(30, 27, 46, 255);
-                buffer.vertex(kMat, kw, kh, 0.0f).color(199, 210, 254, 255);
-                buffer.vertex(kMat, -kw, kh, 0.0f).color(199, 210, 254, 255);
-
-                float gw = 0.08f;
-                buffer.vertex(kMat, -gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
-                buffer.vertex(kMat, gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
-                buffer.vertex(kMat, gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
-                buffer.vertex(kMat, -gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
-
-                matrices.pop();
-            }
-
-            String capeMode = module.cape.get();
-            if (!capeMode.equals("Off")) {
-                matrices.push();
-                matrices.translate(0.0, entity.getHeight() * 0.68, 0.13);
-
-                float walkTilt = entity.isSprinting() ? 42.0f : (entity.forwardSpeed != 0.0f ? 20.0f : 8.0f);
-                float wave = (float) Math.sin(age * 0.15f) * 4.0f;
-                matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(walkTilt + wave));
-                Matrix4f cpMat = matrices.peek().getPositionMatrix();
-
-                int cTop = switch (capeMode) {
-                    case "Fire" -> 0xFFEF4444;
-                    case "Cosmo" -> 0xFF06B6D4;
-                    case "Wave" -> 0xFF3B82F6;
-                    default -> 0xFF6366F1;
-                };
-                int cBottom = 0xFF110E1B;
-
-                float cw = 0.28f;
-                float cl = 0.85f;
-
-                int r1 = (cTop >> 16) & 0xFF, g1 = (cTop >> 8) & 0xFF, b1 = cTop & 0xFF;
-                int r2 = (cBottom >> 16) & 0xFF, g2 = (cBottom >> 8) & 0xFF, b2 = cBottom & 0xFF;
-
-                buffer.vertex(cpMat, -cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
-                buffer.vertex(cpMat, cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
-                buffer.vertex(cpMat, cw, -cl, 0.04f).color(r2, g2, b2, 230);
-                buffer.vertex(cpMat, -cw, -cl, 0.04f).color(r2, g2, b2, 230);
-
-                matrices.pop();
-            }
-        }
-
-        public static void renderStandaloneChinaHat(AbstractClientPlayerEntity entity, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, ChinaHatModule hatMod) {
-            VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
-            matrices.push();
-            matrices.translate(0.0, entity.getHeight() + 0.12, 0.0);
-
-            float r = hatMod.radius.get().floatValue();
-            float h = hatMod.height.get().floatValue();
-            int[] c = hatMod.getRgba();
-
-            renderConeHat(matrices, buffer, r, h, c);
-            matrices.pop();
-        }
-
-        private static void renderConeHat(MatrixStack matrices, VertexConsumer buffer, float r, float h, int[] c) {
-            int segs = 28;
-            Matrix4f mat = matrices.peek().getPositionMatrix();
-            for (int i = 0; i < segs; i++) {
-                double a1 = (i * Math.PI * 2) / segs;
-                double a2 = ((i + 1) * Math.PI * 2) / segs;
-                float x1 = (float) (Math.cos(a1) * r);
-                float z1 = (float) (Math.sin(a1) * r);
-                float x2 = (float) (Math.cos(a2) * r);
-                float z2 = (float) (Math.sin(a2) * r);
-
-                buffer.vertex(mat, 0.0f, h, 0.0f).color(c[0], c[1], c[2], c[3]);
-                buffer.vertex(mat, x1, 0.0f, z1).color(c[0], c[1], c[2], Math.max(50, c[3] - 60));
-                buffer.vertex(mat, x2, 0.0f, z2).color(c[0], c[1], c[2], Math.max(50, c[3] - 60));
-                buffer.vertex(mat, 0.0f, h, 0.0f).color(c[0], c[1], c[2], c[3]);
-            }
-        }
-
-        private static void renderWing(MatrixStack matrices, VertexConsumer buffer, float sc, float flap, int side, int[] c) {
-            matrices.push();
-            matrices.translate(side * 0.14f, 0.0, 0.0);
-            matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(side * (45.0f + flap)));
-            matrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(side * 15.0f));
-            Matrix4f wMat = matrices.peek().getPositionMatrix();
-
-            float w = 0.95f * sc;
-            float h = 0.70f * sc;
-
-            buffer.vertex(wMat, 0.0f, 0.0f, 0.0f).color(c[0], c[1], c[2], c[3]);
-            buffer.vertex(wMat, side * w * 0.5f, h * 0.8f, 0.04f).color(c[0], c[1], c[2], c[3]);
-            buffer.vertex(wMat, side * w, h * 0.4f, 0.0f).color(c[0], c[1], c[2], Math.max(0, c[3] - 30));
-            buffer.vertex(wMat, side * w * 0.4f, -h * 0.3f, -0.02f).color(c[0], c[1], c[2], Math.max(0, c[3] - 20));
-
-            matrices.pop();
-        }
-
-        private static void renderHorn(Matrix4f mat, VertexConsumer buffer, float sideX, int sign) {
-            float hx = sideX;
-            float hy = 0.0f;
-            float hz = -0.1f;
-            buffer.vertex(mat, hx, hy, hz).color(220, 38, 38, 255);
-            buffer.vertex(mat, hx + sign * 0.08f, hy + 0.18f, hz + 0.06f).color(185, 28, 28, 255);
-            buffer.vertex(mat, hx + sign * 0.12f, hy + 0.28f, hz + 0.14f).color(239, 68, 68, 255);
-            buffer.vertex(mat, hx, hy, hz).color(220, 38, 38, 255);
-        }
-    }
-
+    // ==========================================
+    // МОДУЛИ МОДА
+    // ==========================================
     public static class AspectRatioModule extends Module {
-        public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "Custom"));
-        public final SliderSetting customRatio = new SliderSetting("Кастомный", 1.33, 0.40, 2.50, 0.05, "");
+        public final ModeSetting presets = new ModeSetting("Соотношение", "4:3", List.of("16:9", "16:10", "4:3", "5:4", "1:1", "21:9", "3:2", "Custom"));
+        public final SliderSetting customRatio = new SliderSetting("Кастомный Aspect", 1.33, 0.50, 2.40, 0.05, "");
 
         public AspectRatioModule() {
-            super("AspectRatio", "Реальное растяжение проекционной матрицы экрана камеры", Category.RENDER);
+            super("AspectRatio", "Изменяет соотношение сторон камеры и геометрию мира", Category.RENDER);
             registerSetting(presets);
             registerSetting(customRatio);
         }
@@ -981,6 +425,7 @@ public class VisualModClient implements ClientModInitializer {
                 case "5:4" -> 5.0f / 4.0f;
                 case "1:1" -> 1.0f;
                 case "21:9" -> 21.0f / 9.0f;
+                case "3:2" -> 3.0f / 2.0f;
                 default -> customRatio.get().floatValue();
             };
         }
@@ -1018,136 +463,11 @@ public class VisualModClient implements ClientModInitializer {
                 default -> customTime.get().longValue();
             };
 
-            try {
-                client.world.setTimeOfDay(targetTime);
-            } catch (Throwable ignored) {}
+            client.world.setTimeOfDay(targetTime);
 
             if (clearWeather.get()) {
-                try {
-                    client.world.setRainGradient(0.0f);
-                    client.world.setThunderGradient(0.0f);
-                } catch (Throwable ignored) {}
-            }
-        }
-    }
-
-    public static class ChinaHatModule extends Module {
-        public final ModeSetting colorMode = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Cyan", "Red", "Gold", "Pink"));
-        public final SliderSetting radius = new SliderSetting("Радиус", 0.65, 0.3, 1.2, 0.05, "m");
-        public final SliderSetting height = new SliderSetting("Высота", 0.28, 0.1, 0.6, 0.02, "m");
-
-        public ChinaHatModule() {
-            super("ChinaHat", "Азиатская коническая шляпа над головой игрока", Category.RENDER);
-            registerSetting(colorMode);
-            registerSetting(radius);
-            registerSetting(height);
-        }
-
-        public int[] getRgba() {
-            return switch (colorMode.get()) {
-                case "Cyan" -> new int[]{6, 182, 212, 230};
-                case "Red" -> new int[]{239, 68, 68, 230};
-                case "Gold" -> new int[]{234, 179, 8, 230};
-                case "Pink" -> new int[]{236, 72, 153, 230};
-                default -> new int[]{129, 140, 248, 240};
-            };
-        }
-    }
-
-    public static class CrosshairModule extends Module {
-        public final ModeSetting style = new ModeSetting("Тип", "Classic", List.of("Classic", "Dot", "T-Cross"));
-        public final SliderSetting size = new SliderSetting("Размер", 5.0, 2.0, 15.0, 1.0, "px");
-        public final SliderSetting gap = new SliderSetting("Зазор", 3.0, 0.0, 10.0, 1.0, "px");
-        public final SliderSetting thickness = new SliderSetting("Толщина", 1.5, 1.0, 4.0, 0.5, "px");
-        public final BooleanSetting dotInCenter = new BooleanSetting("Точка в центре", false);
-
-        public CrosshairModule() {
-            super("Crosshair", "Кастомный статический прицел (скрывает ванильный)", Category.RENDER);
-            registerSetting(style);
-            registerSetting(size);
-            registerSetting(gap);
-            registerSetting(thickness);
-            registerSetting(dotInCenter);
-        }
-
-        public void renderCrosshair(DrawContext context, int screenWidth, int screenHeight) {
-            int cx = screenWidth / 2;
-            int cy = screenHeight / 2;
-            int s = size.get().intValue();
-            int g = gap.get().intValue();
-            int t = (int) Math.max(1, thickness.get());
-            int halfT = t / 2;
-
-            int color = 0xFFFFFFFF;
-            int border = 0xDD000000;
-
-            String st = style.get();
-            if (st.equals("Dot")) {
-                context.fill(cx - t - 1, cy - t - 1, cx + t + 1, cy + t + 1, border);
-                context.fill(cx - t, cy - t, cx + t, cy + t, color);
-                return;
-            }
-
-            // Обводка
-            context.fill(cx - halfT - 1, cy - g - s - 1, cx - halfT + t + 1, cy - g + 1, border);
-            context.fill(cx - halfT - 1, cy + g - 1, cx - halfT + t + 1, cy + g + s + 1, border);
-            context.fill(cx - g - s - 1, cy - halfT - 1, cx - g + 1, cy - halfT + t + 1, border);
-            if (!st.equals("T-Cross")) {
-                context.fill(cx + g - 1, cy - halfT - 1, cx + g + s + 1, cy - halfT + t + 1, border);
-            }
-
-            // Заливка
-            context.fill(cx - halfT, cy - g - s, cx - halfT + t, cy - g, color);
-            context.fill(cx - halfT, cy + g, cx - halfT + t, cy + g + s, color);
-            context.fill(cx - g - s, cy - halfT, cx - g, cy - halfT + t, color);
-            if (!st.equals("T-Cross")) {
-                context.fill(cx + g, cy - halfT, cx + g + s, cy - halfT + t, color);
-            }
-
-            if (dotInCenter.get()) {
-                context.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFF6366F1);
-            }
-        }
-    }
-
-    public static class ZoomModule extends Module {
-        public final SliderSetting zoomFactor = new SliderSetting("Кратность", 3.5, 1.5, 8.0, 0.5, "x");
-        private static double currentZoom = 1.0;
-        private Integer baseFov = null;
-
-        public ZoomModule() {
-            super("Zoom", "Кинематографическое приближение взгляда без искажений", Category.RENDER);
-            registerSetting(zoomFactor);
-        }
-
-        public static double getZoomLevel() { return currentZoom; }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            double target = isEnabled() ? zoomFactor.get() : 1.0;
-            currentZoom = MathHelper.lerp(0.25, currentZoom, target);
-
-            if (client.options != null) {
-                if (isEnabled()) {
-                    if (baseFov == null) {
-                        baseFov = client.options.getFov().getValue();
-                    }
-                    int targetFov = (int) Math.max(12, baseFov / zoomFactor.get());
-                    client.options.getFov().setValue(targetFov);
-                } else if (baseFov != null) {
-                    client.options.getFov().setValue(baseFov);
-                    baseFov = null;
-                }
-            }
-        }
-
-        @Override
-        public void onDisable() {
-            currentZoom = 1.0;
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc != null && mc.options != null && baseFov != null) {
-                mc.options.getFov().setValue(baseFov);
-                baseFov = null;
+                client.world.setRainGradient(0.0f);
+                client.world.setThunderGradient(0.0f);
             }
         }
     }
@@ -1160,34 +480,419 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
-            try {
-                client.player.addStatusEffect(new StatusEffectInstance(StatusEffects.NIGHT_VISION, 220, 0, false, false, false));
-            } catch (Throwable ignored) {}
+            client.player.addStatusEffect(new StatusEffectInstance(StatusEffects.NIGHT_VISION, 200, 0, false, false, false));
         }
 
         @Override
         public void onDisable() {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player != null) {
-                try {
-                    mc.player.removeStatusEffect(StatusEffects.NIGHT_VISION);
-                } catch (Throwable ignored) {}
+                mc.player.removeStatusEffect(StatusEffects.NIGHT_VISION);
             }
         }
     }
 
-    public static class LowFireModule extends Module {
-        public final SliderSetting height = new SliderSetting("Высота", 0.30, 0.0, 1.0, 0.05, "%");
+    public static class ZoomModule extends Module {
+        public final SliderSetting zoomLevel = new SliderSetting("Кратность", 3.0, 1.5, 6.0, 0.5, "x");
+        private Integer baseFov = null;
 
+        public ZoomModule() {
+            super("Zoom", "Кинематографическое плавное приближение камеры", Category.RENDER);
+            registerSetting(zoomLevel);
+        }
+
+        @Override
+        public void onTick(MinecraftClient client) {
+            if (!isEnabled() || client.options == null) return;
+            if (baseFov == null) baseFov = client.options.getFov().getValue();
+            int targetFov = (int) (baseFov / zoomLevel.get());
+            client.options.getFov().setValue(MathHelper.clamp(targetFov, 30, 110));
+        }
+
+        @Override
+        public void onDisable() {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.options != null && baseFov != null) {
+                mc.options.getFov().setValue(MathHelper.clamp(baseFov, 30, 110));
+            }
+        }
+    }
+
+    public static class CrosshairModule extends Module {
+        public final ModeSetting style = new ModeSetting("Форма", "Classic", List.of("Classic", "Dot", "Circle", "Cross", "T-Cross"));
+        public final SliderSetting gap = new SliderSetting("Зазор", 3.0, 0.0, 10.0, 1.0, "px");
+        public final SliderSetting length = new SliderSetting("Длина", 5.0, 1.0, 12.0, 1.0, "px");
+        public final SliderSetting thickness = new SliderSetting("Толщина", 1.0, 1.0, 3.0, 0.5, "px");
+
+        public CrosshairModule() {
+            super("Crosshair", "Кастомный статический прицел с настройкой размера", Category.RENDER);
+            registerSetting(style);
+            registerSetting(gap);
+            registerSetting(length);
+            registerSetting(thickness);
+        }
+
+        public void renderCustomCrosshair(DrawContext context, int screenW, int screenH) {
+            int cx = screenW / 2;
+            int cy = screenH / 2;
+            int g = gap.get().intValue();
+            int l = length.get().intValue();
+            int t = (int) Math.max(1, thickness.get());
+            int col = 0xFFFFFFFF;
+            int border = 0xAA000000;
+
+            String s = style.get();
+            if (s.equals("Dot")) {
+                context.fill(cx - 1, cy - 1, cx + 2, cy + 2, border);
+                context.fill(cx, cy, cx + 1, cy + 1, col);
+                return;
+            }
+
+            if (!s.equals("Circle")) {
+                context.fill(cx - g - l - 1, cy - t / 2 - 1, cx - g + 1, cy + t / 2 + 2, border);
+                context.fill(cx - g - l, cy - t / 2, cx - g, cy + t / 2 + 1, col);
+
+                context.fill(cx + g - 1, cy - t / 2 - 1, cx + g + l + 1, cy + t / 2 + 2, border);
+                context.fill(cx + g, cy - t / 2, cx + g + l, cy + t / 2 + 1, col);
+
+                context.fill(cx - t / 2 - 1, cy + g - 1, cx + t / 2 + 2, cy + g + l + 1, border);
+                context.fill(cx - t / 2, cy + g, cx + t / 2 + 1, cy + g + l, col);
+
+                if (!s.equals("T-Cross")) {
+                    context.fill(cx - t / 2 - 1, cy - g - l - 1, cx + t / 2 + 2, cy - g + 1, border);
+                    context.fill(cx - t / 2, cy - g - l, cx + t / 2 + 1, cy - g, col);
+                }
+            } else {
+                for (int i = 0; i < 360; i += 30) {
+                    double rad = Math.toRadians(i);
+                    int px = (int) (cx + Math.cos(rad) * (g + 3));
+                    int py = (int) (cy + Math.sin(rad) * (g + 3));
+                    context.fill(px, py, px + 2, py + 2, col);
+                }
+            }
+        }
+    }
+
+    public static class CosmeticsModule extends Module {
+        public final BooleanSetting enableWings = new BooleanSetting("Крылья", true);
+        public final ModeSetting wingStyle = new ModeSetting("Стиль крыльев", "Angel", List.of("Angel", "Dragon", "Demon", "Cyber"));
+        public final SliderSetting wingScale = new SliderSetting("Размах", 1.0, 0.5, 2.0, 0.1, "x");
+        public final BooleanSetting enableCape = new BooleanSetting("Плащ", true);
+        public final ModeSetting capeStyle = new ModeSetting("Стиль плаща", "Pulse", List.of("Pulse", "Cosmo", "Fire", "Wave"));
+        public final ModeSetting headAccessory = new ModeSetting("Голова", "Halo", List.of("None", "Halo", "ChinaHat", "Horns", "Crown"));
+        public final BooleanSetting backKatana = new BooleanSetting("Катана", true);
+
+        public CosmeticsModule() {
+            super("Cosmetics", "Кастомные 3D-крылья, физический плащ, нимб и катана", Category.RENDER);
+            registerSetting(enableWings);
+            registerSetting(wingStyle);
+            registerSetting(wingScale);
+            registerSetting(enableCape);
+            registerSetting(capeStyle);
+            registerSetting(headAccessory);
+            registerSetting(backKatana);
+            setEnabled(true);
+        }
+
+        public void renderPlayerCosmetics(AbstractClientPlayerEntity player, MatrixStack matrices, VertexConsumerProvider vertexConsumers, float tickDelta) {
+            if (!isEnabled()) return;
+
+            long time = System.currentTimeMillis();
+            float flap = MathHelper.sin((time % 2000) / 2000.0f * (float) Math.PI * 2.0f) * 0.45f;
+            if (player.forwardSpeed > 0 || player.sidewaysSpeed > 0) flap *= 1.8f;
+
+            matrices.push();
+
+            if (enableWings.get()) {
+                matrices.push();
+                matrices.translate(0.0, 0.35, 0.14);
+                float sc = wingScale.get().floatValue();
+                matrices.scale(sc, sc, sc);
+
+                int wingColor = switch (wingStyle.get()) {
+                    case "Dragon" -> 0xFF881111;
+                    case "Demon" -> 0xFF330044;
+                    case "Cyber" -> 0xFF00E5FF;
+                    default -> 0xFFE0E7FF;
+                };
+
+                matrices.push();
+                matrices.multiply(RotationAxis.POSITIVE_Y.rotation(0.35f + flap));
+                drawQuad3D(matrices, 0.0f, 0.0f, 0.9f, 0.65f, wingColor);
+                matrices.pop();
+
+                matrices.push();
+                matrices.multiply(RotationAxis.POSITIVE_Y.rotation(-0.35f - flap));
+                drawQuad3D(matrices, -0.9f, 0.0f, 0.0f, 0.65f, wingColor);
+                matrices.pop();
+
+                matrices.pop();
+            }
+
+            if (enableCape.get()) {
+                matrices.push();
+                matrices.translate(0.0, 0.0, 0.15);
+                float speedTilt = (player.forwardSpeed != 0 || player.sidewaysSpeed != 0) ? 0.45f : 0.08f;
+                matrices.multiply(RotationAxis.POSITIVE_X.rotation(speedTilt + MathHelper.sin(time / 250.0f) * 0.05f));
+
+                int capeColor = switch (capeStyle.get()) {
+                    case "Cosmo" -> 0xFF1E1035;
+                    case "Fire" -> 0xFF8A1800;
+                    case "Wave" -> 0xFF0B4F6C;
+                    default -> 0xFF4F46E5;
+                };
+
+                drawQuad3D(matrices, -0.28f, -0.9f, 0.28f, 0.05f, capeColor);
+                matrices.pop();
+            }
+
+            String head = headAccessory.get();
+            if (!head.equals("None")) {
+                matrices.push();
+                matrices.translate(0.0, player.getEyeHeight(player.getPose()) + 0.35, 0.0);
+
+                if (head.equals("Halo")) {
+                    matrices.multiply(RotationAxis.POSITIVE_Y.rotation(time / 600.0f));
+                    matrices.multiply(RotationAxis.POSITIVE_X.rotation(0.2f));
+                    drawQuad3D(matrices, -0.3f, -0.02f, 0.3f, 0.02f, 0xFFFFD700);
+                } else if (head.equals("ChinaHat")) {
+                    matrices.scale(0.85f, 0.35f, 0.85f);
+                    drawQuad3D(matrices, -0.5f, 0.0f, 0.5f, 0.05f, 0xFF4F46E5);
+                } else if (head.equals("Horns")) {
+                    drawQuad3D(matrices, -0.25f, 0.0f, -0.15f, 0.3f, 0xFF990022);
+                    drawQuad3D(matrices, 0.15f, 0.0f, 0.25f, 0.3f, 0xFF990022);
+                } else if (head.equals("Crown")) {
+                    drawQuad3D(matrices, -0.3f, 0.0f, 0.3f, 0.15f, 0xFFFFCC00);
+                }
+                matrices.pop();
+            }
+
+            if (backKatana.get()) {
+                matrices.push();
+                matrices.translate(0.05, 0.2, 0.18);
+                matrices.multiply(RotationAxis.POSITIVE_Z.rotation(0.75f));
+                drawQuad3D(matrices, -0.03f, -0.6f, 0.03f, 0.5f, 0xFF222228);
+                drawQuad3D(matrices, -0.02f, 0.5f, 0.02f, 0.7f, 0xFFCCCCCC);
+                matrices.pop();
+            }
+
+            matrices.pop();
+        }
+
+        private void drawQuad3D(MatrixStack matrices, float x0, float y0, float x1, float y1, int color) {
+            Matrix4f mat = matrices.peek().getPositionMatrix();
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            RenderSystem.disableCull();
+            RenderSystem.setShader(net.minecraft.client.gl.ShaderProgramKeys.POSITION_COLOR);
+            net.minecraft.client.render.Tessellator tess = net.minecraft.client.render.Tessellator.getInstance();
+            net.minecraft.client.render.BufferBuilder buf = tess.begin(net.minecraft.client.render.VertexFormat.DrawMode.QUADS, net.minecraft.client.render.VertexFormats.POSITION_COLOR);
+
+            int a = (color >> 24) & 0xFF;
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+            if (a == 0) a = 255;
+
+            buf.vertex(mat, x0, y0, 0.0f).color(r, g, b, a);
+            buf.vertex(mat, x1, y0, 0.0f).color(r, g, b, a);
+            buf.vertex(mat, x1, y1, 0.0f).color(r, g, b, a);
+            buf.vertex(mat, x0, y1, 0.0f).color(r, g, b, a);
+
+            net.minecraft.client.render.BufferRenderer.drawWithGlobalProgram(buf.end());
+            RenderSystem.enableCull();
+            RenderSystem.disableBlend();
+        }
+    }
+
+    public static class TargetHudModule extends Module {
+        public final SliderSetting posX = new SliderSetting("Позиция X", 160.0, 10.0, 1200.0, 10.0, "px");
+        public final SliderSetting posY = new SliderSetting("Позиция Y", 140.0, 10.0, 800.0, 10.0, "px");
+        public final SliderSetting maxDistance = new SliderSetting("Макс. Дистанция", 24.0, 6.0, 64.0, 2.0, "m");
+
+        private LivingEntity currentTarget = null;
+        private float animAlpha = 0.0f;
+        private float hpProgress = 20.0f;
+        private float secondaryHp = 20.0f;
+        private float absorptionProgress = 0.0f;
+        private float lastHurtTime = 0.0f;
+        private final List<HudParticle> particles = new CopyOnWriteArrayList<>();
+
+        public TargetHudModule() {
+            super("TargetHUD", "Интерактивная плашка цели с частицами и скином", Category.RENDER);
+            registerSetting(posX);
+            registerSetting(posY);
+            registerSetting(maxDistance);
+            setEnabled(true);
+        }
+
+        public void setTarget(LivingEntity target) {
+            this.currentTarget = target;
+        }
+
+        public void render(DrawContext context, MinecraftClient mc) {
+            LivingEntity target = resolveTarget(mc);
+            boolean isPreview = (target == null && mc.currentScreen instanceof ModernRefinedClickGui && mc.player != null);
+            if (isPreview) target = mc.player;
+
+            boolean visible = (target != null && target.isAlive());
+            if (visible && !isPreview && mc.player != null) {
+                double dist = mc.player.distanceTo(target);
+                if (dist > maxDistance.get()) visible = false;
+            }
+
+            animAlpha = MathHelper.lerp(0.18f, animAlpha, visible ? 1.0f : 0.0f);
+            if (animAlpha < 0.02f) {
+                particles.clear();
+                return;
+            }
+
+            if (target == null) return;
+
+            float x = posX.get().floatValue();
+            float y = posY.get().floatValue();
+            float maxHp = Math.max(1.0f, target.getMaxHealth());
+            float curHp = MathHelper.clamp(target.getHealth(), 0.0f, maxHp);
+            float abs = Math.max(0.0f, target.getAbsorptionAmount());
+
+            hpProgress = MathHelper.lerp(0.25f, hpProgress, curHp);
+            secondaryHp = MathHelper.lerp(0.08f, secondaryHp, curHp);
+            absorptionProgress = MathHelper.lerp(0.25f, absorptionProgress, abs);
+
+            if (target.hurtTime > 0 && target.hurtTime > lastHurtTime) {
+                for (int i = 0; i < 5; i++) {
+                    particles.add(new HudParticle(x + 16.0f, y + 20.0f));
+                }
+            }
+            lastHurtTime = target.hurtTime;
+
+            int alphaInt = (int) (animAlpha * 255.0f);
+            int bgCol = (MathHelper.clamp(alphaInt, 0, 220) << 24) | 0x111019;
+            int borderCol = ((int) (alphaInt * 0.4f) << 24) | 0x6366F1;
+
+            ModernRefinedClickGui.drawSmoothRect(context, (int) x, (int) y, 126, 42, bgCol, borderCol);
+
+            int headAlpha = (int) (animAlpha * 255.0f);
+            int headCol = (headAlpha << 24) | 0xFFFFFF;
+
+            if (target instanceof AbstractClientPlayerEntity player) {
+                Identifier skin = player.getSkinTextures().texture();
+                context.drawTexture(skin, (int) x + 5, (int) y + 5, 32, 32, 8.0f, 8.0f, 8, 8, 64, 64);
+                context.drawTexture(skin, (int) x + 5, (int) y + 5, 32, 32, 40.0f, 8.0f, 8, 8, 64, 64);
+            } else {
+                ModernRefinedClickGui.drawSmoothRect(context, (int) x + 5, (int) y + 5, 32, 32, 0x55333344, 0x44FFFFFF);
+                String letter = target.getName().getString().substring(0, 1).toUpperCase();
+                drawTextSafe(context, mc.textRenderer, letter, (int) x + 17, (int) y + 17, headCol, false);
+            }
+
+            String name = target.getName().getString();
+            if (name.length() > 11) name = name.substring(0, 10) + "..";
+            drawTextSafe(context, mc.textRenderer, name, (int) x + 42, (int) y + 7, ((int) (animAlpha * 255.0f) << 24) | 0xFFFFFF, false);
+
+            if (mc.player != null && !isPreview) {
+                double dist = mc.player.distanceTo(target);
+                String distStr = String.format("%.1fm", dist);
+                int dw = mc.textRenderer.getWidth(distStr);
+                drawTextSafe(context, mc.textRenderer, distStr, (int) (x + 120 - dw), (int) y + 7, ((int) (animAlpha * 180.0f) << 24) | 0x94A3B8, false);
+            }
+
+            float barX = x + 42.0f;
+            float barY = y + 23.0f;
+            float barW = 76.0f;
+            float barH = 5.0f;
+
+            context.fill((int) barX, (int) barY, (int) (barX + barW), (int) (barY + barH), 0x55222230);
+
+            float secPct = MathHelper.clamp(secondaryHp / maxHp, 0.0f, 1.0f);
+            context.fill((int) barX, (int) barY, (int) (barX + barW * secPct), (int) (barY + barH), ((int) (animAlpha * 220.0f) << 24) | 0xEF4444);
+
+            float hpPct = MathHelper.clamp(hpProgress / maxHp, 0.0f, 1.0f);
+            context.fill((int) barX, (int) barY, (int) (barX + barW * hpPct), (int) (barY + barH), ((int) (animAlpha * 255.0f) << 24) | 0x6366F1);
+
+            if (absorptionProgress > 0.1f) {
+                float absPct = MathHelper.clamp(absorptionProgress / maxHp, 0.0f, 1.0f);
+                context.fill((int) barX, (int) (barY + 3), (int) (barX + barW * absPct), (int) (barY + barH), ((int) (animAlpha * 255.0f) << 24) | 0xFACC15);
+            }
+
+            String hpText = String.format("%.1f HP", curHp);
+            drawTextSafe(context, mc.textRenderer, hpText, (int) barX, (int) barY + 7, ((int) (animAlpha * 200.0f) << 24) | 0xCBD5E1, false);
+
+            for (HudParticle p : particles) {
+                p.update();
+                if (p.isDead()) {
+                    particles.remove(p);
+                } else {
+                    float pAlpha = (1.0f - p.age / (float) p.maxAge) * animAlpha;
+                    int col = ((int) (pAlpha * 255.0f) << 24) | 0x6366F1;
+                    context.fill((int) p.x, (int) p.y, (int) p.x + 2, (int) p.y + 2, col);
+                }
+            }
+        }
+
+        private LivingEntity resolveTarget(MinecraftClient mc) {
+            if (currentTarget != null && currentTarget.isAlive() && mc.player != null && mc.player.distanceTo(currentTarget) <= maxDistance.get()) {
+                return currentTarget;
+            }
+            if (mc.crosshairTarget instanceof EntityHitResult ehr && ehr.getEntity() instanceof LivingEntity living && living.isAlive()) {
+                if (mc.player != null && mc.player.distanceTo(living) <= maxDistance.get()) {
+                    currentTarget = living;
+                    return living;
+                }
+            }
+            return null;
+        }
+
+        private static class HudParticle {
+            float x, y, vx, vy;
+            int age = 0;
+            int maxAge = 25;
+
+            public HudParticle(float x, float y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (ThreadLocalRandom.current().nextFloat() - 0.5f) * 2.5f;
+                this.vy = (ThreadLocalRandom.current().nextFloat() - 0.5f) * 2.5f;
+            }
+
+            public void update() {
+                x += vx;
+                y += vy;
+                age++;
+            }
+
+            public boolean isDead() { return age >= maxAge; }
+        }
+    }
+
+    public static class NoHurtCamModule extends Module {
+        public NoHurtCamModule() {
+            super("NoHurtCam", "Отключает дезориентирующую тряску камеры при ударах", Category.REMOVALS);
+        }
+
+        @Override
+        public void onTick(MinecraftClient client) {
+            if (!isEnabled() || client.options == null) return;
+            client.options.getDamageTiltStrength().setValue(0.0);
+        }
+
+        @Override
+        public void onDisable() {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.options != null) mc.options.getDamageTiltStrength().setValue(1.0);
+        }
+    }
+
+    public static class LowFireModule extends Module {
+        public final SliderSetting height = new SliderSetting("Высота", 0.15, 0.0, 1.0, 0.05, "");
         public LowFireModule() {
-            super("LowFire", "Опускает или полностью отключает огонь от 1-го лица", Category.REMOVALS);
+            super("LowFire", "Опускает текстуру огня от первого лица", Category.REMOVALS);
             registerSetting(height);
         }
     }
 
     public static class LowShieldModule extends Module {
-        public final SliderSetting offsetY = new SliderSetting("Опустить Y", 0.35, 0.0, 0.90, 0.05, "");
-        public final SliderSetting scale = new SliderSetting("Масштаб", 0.70, 0.20, 1.0, 0.05, "x");
+        public final SliderSetting offsetY = new SliderSetting("Опустить Y", 0.35, 0.0, 0.8, 0.05, "");
+        public final SliderSetting scale = new SliderSetting("Масштаб", 0.70, 0.3, 1.0, 0.05, "x");
 
         public LowShieldModule() {
             super("LowShield", "Уменьшает и опускает щит во второй руке", Category.REMOVALS);
@@ -1196,71 +901,171 @@ public class VisualModClient implements ClientModInitializer {
         }
     }
 
-    public static class NoHurtCamModule extends Module {
-        public NoHurtCamModule() {
-            super("NoHurtCam", "Отключает дезориентирующую тряску экрана при получении ударов", Category.REMOVALS);
-        }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.options == null) return;
-            try {
-                client.options.getDamageTiltStrength().setValue(0.0);
-            } catch (Throwable ignored) {}
-        }
-
-        @Override
-        public void onDisable() {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.options != null) {
-                try {
-                    mc.options.getDamageTiltStrength().setValue(1.0);
-                } catch (Throwable ignored) {}
-            }
-        }
-    }
-
     public static class AntiBlindnessModule extends Module {
-        public final BooleanSetting blindness = new BooleanSetting("Слепота зелья", true);
-        public final BooleanSetting darkness = new BooleanSetting("Тьма Вардена", true);
-        public final BooleanSetting nausea = new BooleanSetting("Искажение портала", true);
-
         public AntiBlindnessModule() {
-            super("AntiBlindness", "Очищает экран от эффектов слепоты, тьмы и тошноты", Category.REMOVALS);
-            registerSetting(blindness);
-            registerSetting(darkness);
-            registerSetting(nausea);
+            super("AntiBlindness", "Удаляет эффекты слепоты, тьмы и искажения портала", Category.REMOVALS);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
-            if (blindness.get() && client.player.hasStatusEffect(StatusEffects.BLINDNESS)) client.player.removeStatusEffect(StatusEffects.BLINDNESS);
-            if (darkness.get() && client.player.hasStatusEffect(StatusEffects.DARKNESS)) client.player.removeStatusEffect(StatusEffects.DARKNESS);
-            if (nausea.get() && client.player.hasStatusEffect(StatusEffects.NAUSEA)) client.player.removeStatusEffect(StatusEffects.NAUSEA);
+            if (client.player.hasStatusEffect(StatusEffects.BLINDNESS)) client.player.removeStatusEffect(StatusEffects.BLINDNESS);
+            if (client.player.hasStatusEffect(StatusEffects.DARKNESS)) client.player.removeStatusEffect(StatusEffects.DARKNESS);
+            if (client.player.hasStatusEffect(StatusEffects.NAUSEA)) client.player.removeStatusEffect(StatusEffects.NAUSEA);
         }
     }
 
     public static class NoRenderModule extends Module {
-        public final BooleanSetting explosions = new BooleanSetting("Частицы взрывов", true);
-        public final BooleanSetting totemAnimation = new BooleanSetting("Анимация тотема", true);
-
         public NoRenderModule() {
-            super("NoRender", "Блокирует спам лагающих частиц взрывов и анимацию тотема", Category.REMOVALS);
-            registerSetting(explosions);
-            registerSetting(totemAnimation);
+            super("NoRender", "Блокирует частицы взрывов и анимацию тотема", Category.REMOVALS);
+        }
+    }
+
+    public static class TriggerBotModule extends Module {
+        public final BooleanSetting critOnly = new BooleanSetting("Только криты", true);
+
+        public TriggerBotModule() {
+            super("TriggerBot", "Автоматический удар при наведении на цель", Category.COMBAT);
+            registerSetting(critOnly);
+        }
+
+        @Override
+        public void onTick(MinecraftClient client) {
+            if (!isEnabled() || client.player == null || client.interactionManager == null) return;
+            if (client.player.getAttackCooldownProgress(0.5f) < 0.95f) return;
+
+            if (critOnly.get()) {
+                boolean isCrit = client.player.fallDistance > 0.0f
+                        && !client.player.isOnGround()
+                        && !client.player.isClimbing()
+                        && !client.player.isTouchingWater()
+                        && !client.player.hasStatusEffect(StatusEffects.BLINDNESS)
+                        && !client.player.isSprinting();
+                if (!isCrit) return;
+            }
+
+            Entity target = null;
+            if (client.crosshairTarget instanceof EntityHitResult ehr) {
+                target = ehr.getEntity();
+            } else {
+                HitBoxesModule hb = (HitBoxesModule) VisualModClient.INSTANCE.getModuleManager().getModule(HitBoxesModule.class);
+                if (hb != null && hb.isEnabled()) {
+                    target = hb.getExpandedTarget(client, 3.8);
+                }
+            }
+
+            if (target instanceof LivingEntity living && living.isAlive()) {
+                client.interactionManager.attackEntity(client.player, living);
+                client.player.swingHand(Hand.MAIN_HAND);
+
+                TargetHudModule thud = (TargetHudModule) VisualModClient.INSTANCE.getModuleManager().getModule(TargetHudModule.class);
+                if (thud != null) thud.setTarget(living);
+            }
+        }
+    }
+
+    public static class HitBoxesModule extends Module {
+        public final SliderSetting expand = new SliderSetting("Расширение", 0.35, 0.05, 1.2, 0.05, "m");
+
+        public HitBoxesModule() {
+            super("HitBoxes", "Увеличивает объем хитбоксов целей для попаданий", Category.COMBAT);
+            registerSetting(expand);
+        }
+
+        public Entity getExpandedTarget(MinecraftClient mc, double reach) {
+            if (mc.player == null || mc.world == null) return null;
+            Vec3d cam = mc.player.getCameraPosVec(1.0f);
+            Vec3d rot = mc.player.getRotationVec(1.0f);
+            Vec3d end = cam.add(rot.multiply(reach));
+            double exp = expand.get();
+
+            Entity best = null;
+            double bestDist = reach;
+
+            for (Entity e : mc.world.getEntities()) {
+                if (e != mc.player && e instanceof LivingEntity living && living.isAlive()) {
+                    Box box = living.getBoundingBox().expand(exp);
+                    Optional<Vec3d> hit = box.raycast(cam, end);
+                    if (hit.isPresent()) {
+                        double d = cam.distanceTo(hit.get());
+                        if (d < bestDist) {
+                            bestDist = d;
+                            best = living;
+                        }
+                    }
+                }
+            }
+            return best;
+        }
+    }
+
+    public static class VelocityModule extends Module {
+        public final SliderSetting horizontal = new SliderSetting("Горизонталь", 0.0, 0.0, 1.0, 0.05, "%");
+        public final SliderSetting vertical = new SliderSetting("Вертикаль", 0.0, 0.0, 1.0, 0.05, "%");
+
+        public VelocityModule() {
+            super("Velocity", "Снижает или полностью убирает отдачу от ударов", Category.COMBAT);
+            registerSetting(horizontal);
+            registerSetting(vertical);
+        }
+
+        @Override
+        public void onTick(MinecraftClient client) {
+            if (!isEnabled() || client.player == null) return;
+            if (client.player.hurtTime == 9) {
+                client.player.setVelocity(
+                        client.player.getVelocity().x * horizontal.get(),
+                        client.player.getVelocity().y * vertical.get(),
+                        client.player.getVelocity().z * horizontal.get()
+                );
+            }
+        }
+    }
+
+    public static class TapeMouseModule extends Module {
+        public final SliderSetting minCps = new SliderSetting("Мин. CPS", 9.0, 4.0, 20.0, 1.0, "");
+        public final SliderSetting maxCps = new SliderSetting("Макс. CPS", 13.0, 6.0, 25.0, 1.0, "");
+        private long lastClickTime = 0;
+
+        public TapeMouseModule() {
+            super("TapeMouse", "Эмуляция зажатия мыши с реалистичным разбросом CPS", Category.COMBAT);
+            registerSetting(minCps);
+            registerSetting(maxCps);
+        }
+
+        @Override
+        public void onTick(MinecraftClient client) {
+            if (!isEnabled() || client.player == null || client.currentScreen != null) return;
+
+            long handle = client.getWindow().getHandle();
+            boolean lmbDown = GLFW.glfwGetMouseButton(handle, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
+            if (!lmbDown) return;
+
+            long now = System.currentTimeMillis();
+            double cps = ThreadLocalRandom.current().nextDouble(minCps.get(), maxCps.get());
+            long delay = (long) (1000.0 / Math.max(1.0, cps));
+
+            if (now - lastClickTime >= delay) {
+                lastClickTime = now;
+                if (client.crosshairTarget instanceof EntityHitResult ehr && ehr.getEntity() instanceof LivingEntity living) {
+                    client.interactionManager.attackEntity(client.player, living);
+                    client.player.swingHand(Hand.MAIN_HAND);
+                } else if (client.crosshairTarget instanceof BlockHitResult bhr) {
+                    client.interactionManager.updateBlockBreakingProgress(bhr.getBlockPos(), bhr.getSide());
+                    client.player.swingHand(Hand.MAIN_HAND);
+                }
+            }
         }
     }
 
     public static class AutoSprintModule extends Module {
         public AutoSprintModule() {
-            super("AutoSprint", "Автоматический непрерывный бег без двойного W", Category.MOVEMENT);
+            super("AutoSprint", "Автоматический непрерывный спринт при ходьбе", Category.MOVEMENT);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
-            if (client.player.getHungerManager().getFoodLevel() <= 6) return;
             if (client.player.forwardSpeed > 0 && !client.player.isSneaking() && !client.player.horizontalCollision) {
                 client.player.setSprinting(true);
             }
@@ -1268,71 +1073,48 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class FastBreakModule extends Module {
-        public final SliderSetting speedMultiplier = new SliderSetting("Скорость", 1.5, 1.0, 3.0, 0.1, "x");
-
         public FastBreakModule() {
-            super("FastBreak", "Увеличивает скорость копания и сбрасывает кулдаун удара по блоку", Category.MOVEMENT);
-            registerSetting(speedMultiplier);
-        }
-
-        @Override
-        public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.interactionManager == null) return;
-            try {
-                for (Field f : ClientPlayerInteractionManager.class.getDeclaredFields()) {
-                    if (f.getType() == int.class && (f.getName().equals("blockBreakingCooldown") || f.getName().equals("field_3716"))) {
-                        f.setAccessible(true);
-                        f.setInt(client.interactionManager, 0);
-                    }
-                }
-            } catch (Throwable ignored) {}
+            super("FastBreak", "Увеличивает скорость копания и сбрасывает задержки", Category.MOVEMENT);
         }
     }
 
     public static class InventoryMoveModule extends Module {
         public InventoryMoveModule() {
-            super("InventoryMove", "Свободное перемещение и прыжки при открытом инвентаре", Category.MOVEMENT);
+            super("InventoryMove", "Свободное движение при открытом инвентаре", Category.MOVEMENT);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.currentScreen == null || client.player == null) return;
-            if (client.currentScreen instanceof ChatScreen) return;
+            if (!isEnabled() || client.currentScreen == null) return;
+            if (client.currentScreen instanceof net.minecraft.client.gui.screen.ChatScreen) return;
 
-            long window = client.getWindow().getHandle();
-            client.options.forwardKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_W) == GLFW.GLFW_PRESS);
-            client.options.backKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_S) == GLFW.GLFW_PRESS);
-            client.options.leftKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_A) == GLFW.GLFW_PRESS);
-            client.options.rightKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_D) == GLFW.GLFW_PRESS);
-            client.options.jumpKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_SPACE) == GLFW.GLFW_PRESS);
-            client.options.sprintKey.setPressed(GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS);
+            long h = client.getWindow().getHandle();
+            client.options.forwardKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_W) == GLFW.GLFW_PRESS);
+            client.options.backKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_S) == GLFW.GLFW_PRESS);
+            client.options.leftKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_A) == GLFW.GLFW_PRESS);
+            client.options.rightKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_D) == GLFW.GLFW_PRESS);
+            client.options.jumpKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_SPACE) == GLFW.GLFW_PRESS);
+            client.options.sprintKey.setPressed(GLFW.glfwGetKey(h, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS);
         }
     }
 
     public static class WaterSpeedModule extends Module {
-        public final SliderSetting speed = new SliderSetting("Ускорение", 1.15, 1.05, 1.5, 0.05, "x");
-
         public WaterSpeedModule() {
-            super("WaterSpeed", "Увеличивает скорость плавания в воде", Category.MOVEMENT);
-            registerSetting(speed);
+            super("WaterSpeed", "Увеличивает скорость плавания под водой", Category.MOVEMENT);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null) return;
             if (client.player.isTouchingWater()) {
-                double s = speed.get();
-                client.player.setVelocity(client.player.getVelocity().multiply(s, 1.0, s));
+                client.player.setVelocity(client.player.getVelocity().multiply(1.15, 1.05, 1.15));
             }
         }
     }
 
     public static class FastPlaceModule extends Module {
-        public final SliderSetting delay = new SliderSetting("Задержка ПКМ", 0.0, 0.0, 3.0, 1.0, "t");
-
         public FastPlaceModule() {
-            super("FastPlace", "Убирает задержку между установкой блоков", Category.MISC);
-            registerSetting(delay);
+            super("FastPlace", "Убирает задержку использования блоков ПКМ", Category.MISC);
         }
 
         @Override
@@ -1342,7 +1124,7 @@ public class VisualModClient implements ClientModInitializer {
                 for (Field f : MinecraftClient.class.getDeclaredFields()) {
                     if (f.getType() == int.class && (f.getName().equals("itemUseCooldown") || f.getName().equals("field_1752"))) {
                         f.setAccessible(true);
-                        f.setInt(client, delay.get().intValue());
+                        f.setInt(client, 0);
                     }
                 }
             } catch (Throwable ignored) {}
@@ -1351,39 +1133,29 @@ public class VisualModClient implements ClientModInitializer {
 
     public static class AutoToolModule extends Module {
         public AutoToolModule() {
-            super("AutoTool", "Автоматически выбирает эффективный инструмент из хотбара", Category.MISC);
+            super("AutoTool", "Автоматически выбирает инструмент в слоте для копания", Category.MISC);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
             if (!isEnabled() || client.player == null || client.world == null) return;
-
-            long window = client.getWindow().getHandle();
-            boolean isLeftDown = client.options.attackKey.isPressed() || GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
-
-            if (isLeftDown && client.crosshairTarget instanceof BlockHitResult bHit && bHit.getType() == HitResult.Type.BLOCK) {
-                BlockPos pos = bHit.getBlockPos();
-                BlockState state = client.world.getBlockState(pos);
+            if (client.options.attackKey.isPressed() && client.crosshairTarget instanceof BlockHitResult bhr) {
+                BlockState state = client.world.getBlockState(bhr.getBlockPos());
                 if (state.isAir()) return;
 
                 int bestSlot = -1;
-                float bestScore = -1.0f;
+                float bestSpeed = 1.0f;
 
                 for (int i = 0; i < 9; i++) {
                     ItemStack stack = client.player.getInventory().getStack(i);
-                    if (stack.isEmpty()) continue;
-
-                    float speed = stack.getMiningSpeedMultiplier(state);
-                    boolean suitable = stack.isSuitableFor(state);
-                    float score = speed + (suitable ? 1000.0f : 0.0f);
-
-                    if (score > bestScore) {
-                        bestScore = score;
+                    float sp = stack.getMiningSpeedMultiplier(state);
+                    if (sp > bestSpeed) {
+                        bestSpeed = sp;
                         bestSlot = i;
                     }
                 }
 
-                if (bestSlot != -1 && client.player.getInventory().selectedSlot != bestSlot && bestScore > 1.0f) {
+                if (bestSlot != -1 && bestSlot != client.player.getInventory().selectedSlot) {
                     client.player.getInventory().selectedSlot = bestSlot;
                 }
             }
@@ -1391,13 +1163,11 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class FreeCameraModule extends Module {
-        public final SliderSetting speed = new SliderSetting("Скорость полета", 1.5, 0.5, 5.0, 0.1, "x");
+        public final SliderSetting speed = new SliderSetting("Скорость", 1.5, 0.5, 5.0, 0.2, "x");
         private OtherClientPlayerEntity dummyCamera = null;
-        private double origX, origY, origZ;
-        private float origYaw, origPitch;
 
         public FreeCameraModule() {
-            super("FreeCamera", "Свободный полет камерой (спектратор) сквозь стены без движения тела", Category.MISC);
+            super("FreeCamera", "Свободный полёт камеры сквозь блоки (NoClip)", Category.MISC);
             registerSetting(speed);
         }
 
@@ -1406,144 +1176,78 @@ public class VisualModClient implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc.player == null || mc.world == null) return;
 
-            origX = mc.player.getX();
-            origY = mc.player.getY();
-            origZ = mc.player.getZ();
-            origYaw = mc.player.getYaw();
-            origPitch = mc.player.getPitch();
-
-            try {
-                dummyCamera = new OtherClientPlayerEntity(mc.world, mc.player.getGameProfile());
-                dummyCamera.setId(-42069);
-                dummyCamera.copyPositionAndRotation(mc.player);
-                dummyCamera.setHeadYaw(mc.player.getHeadYaw());
-                dummyCamera.setBodyYaw(mc.player.getBodyYaw());
-                dummyCamera.noClip = true;
-                dummyCamera.setInvisible(true);
-
-                mc.world.addEntity(dummyCamera);
-                mc.setCameraEntity(dummyCamera);
-            } catch (Throwable t) {
-                t.printStackTrace();
-            }
+            dummyCamera = new OtherClientPlayerEntity(mc.world, mc.player.getGameProfile());
+            dummyCamera.copyPositionAndRotation(mc.player);
+            dummyCamera.setYaw(mc.player.getYaw());
+            dummyCamera.setPitch(mc.player.getPitch());
+            dummyCamera.noClip = true;
+            mc.world.addEntity(dummyCamera);
+            mc.setCameraEntity(dummyCamera);
         }
 
         @Override
         public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.player == null || client.world == null) return;
+            if (dummyCamera == null || client.player == null) return;
 
-            if (dummyCamera == null || dummyCamera.isRemoved()) {
-                onEnable();
-                if (dummyCamera == null) return;
-            }
+            long h = client.getWindow().getHandle();
+            float sp = speed.get().floatValue() * 0.45f;
 
-            float deltaYaw = client.player.getYaw() - origYaw;
-            float deltaPitch = client.player.getPitch() - origPitch;
+            Vec3d forward = Vec3d.fromPolar(0.0f, dummyCamera.getYaw()).multiply(sp);
+            Vec3d right = Vec3d.fromPolar(0.0f, dummyCamera.getYaw() + 90.0f).multiply(sp);
 
-            dummyCamera.setYaw(dummyCamera.getYaw() + deltaYaw);
-            dummyCamera.setPitch(MathHelper.clamp(dummyCamera.getPitch() + deltaPitch, -90.0f, 90.0f));
-            dummyCamera.setHeadYaw(dummyCamera.getYaw());
-            dummyCamera.noClip = true;
+            Vec3d mot = Vec3d.ZERO;
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_W) == GLFW.GLFW_PRESS) mot = mot.add(forward);
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_S) == GLFW.GLFW_PRESS) mot = mot.subtract(forward);
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_A) == GLFW.GLFW_PRESS) mot = mot.subtract(right);
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_D) == GLFW.GLFW_PRESS) mot = mot.add(right);
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_SPACE) == GLFW.GLFW_PRESS) mot = mot.add(0.0, sp, 0.0);
+            if (GLFW.glfwGetKey(h, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS) mot = mot.add(0.0, -sp, 0.0);
 
-            client.player.setVelocity(0, 0, 0);
-            client.player.setPosition(origX, origY, origZ);
-            client.player.setYaw(origYaw);
-            client.player.setPitch(origPitch);
-            client.player.setHeadYaw(origYaw);
-            client.player.setBodyYaw(origYaw);
-
-            double sp = speed.get() * 0.45;
-            double forward = 0;
-            double strafe = 0;
-            double vertical = 0;
-
-            if (client.options.forwardKey.isPressed()) forward += 1;
-            if (client.options.backKey.isPressed()) forward -= 1;
-            if (client.options.leftKey.isPressed()) strafe += 1;
-            if (client.options.rightKey.isPressed()) strafe -= 1;
-            if (client.options.jumpKey.isPressed()) vertical += 1;
-            if (client.options.sneakKey.isPressed()) vertical -= 1;
-
-            if (forward != 0 || strafe != 0 || vertical != 0) {
-                float yaw = dummyCamera.getYaw();
-                float pitch = dummyCamera.getPitch();
-
-                double radYaw = Math.toRadians(yaw);
-                double radPitch = Math.toRadians(pitch);
-
-                double cosYaw = Math.cos(radYaw);
-                double sinYaw = Math.sin(radYaw);
-                double cosPitch = Math.cos(radPitch);
-                double sinPitch = Math.sin(radPitch);
-
-                double forwardX = -sinYaw * cosPitch;
-                double forwardY = -sinPitch;
-                double forwardZ = cosYaw * cosPitch;
-
-                double strafeX = cosYaw;
-                double strafeZ = sinYaw;
-
-                double dx = (forward * forwardX + strafe * strafeX) * sp;
-                double dy = (forward * forwardY + vertical) * sp;
-                double dz = (forward * forwardZ + strafe * strafeZ) * sp;
-
-                dummyCamera.setPosition(dummyCamera.getX() + dx, dummyCamera.getY() + dy, dummyCamera.getZ() + dz);
-            }
-            dummyCamera.setVelocity(0, 0, 0);
+            dummyCamera.setPosition(dummyCamera.getX() + mot.x, dummyCamera.getY() + mot.y, dummyCamera.getZ() + mot.z);
         }
 
         @Override
         public void onDisable() {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc != null) {
-                if (mc.player != null) {
-                    mc.setCameraEntity(mc.player);
-                    mc.player.setVelocity(0, 0, 0);
-                }
-                if (dummyCamera != null) {
-                    try {
-                        dummyCamera.discard();
-                    } catch (Throwable ignored) {}
-                    dummyCamera = null;
-                }
+            if (mc.player != null) mc.setCameraEntity(mc.player);
+            if (dummyCamera != null && mc.world != null) {
+                mc.world.removeEntity(dummyCamera.getId(), Entity.RemovalReason.DISCARDED);
+                dummyCamera = null;
             }
         }
     }
 
+    // ==========================================
+    // МОДУЛЬНЫЙ МЕНЕДЖЕР
+    // ==========================================
     public static class ModuleManager {
         private final List<Module> modules = new ArrayList<>();
 
         public void init() {
-            // Combat
             modules.add(new TriggerBotModule());
             modules.add(new HitBoxesModule());
             modules.add(new VelocityModule());
             modules.add(new TapeMouseModule());
 
-            // Movement
             modules.add(new AutoSprintModule());
             modules.add(new FastBreakModule());
             modules.add(new InventoryMoveModule());
             modules.add(new WaterSpeedModule());
 
-            // Render
-            modules.add(new TargetHudModule());
-            modules.add(new CosmeticsModule());
             modules.add(new AspectRatioModule());
             modules.add(new AmbienceModule());
             modules.add(new FullBrightModule());
-            modules.add(new ChinaHatModule());
             modules.add(new ZoomModule());
             modules.add(new CrosshairModule());
+            modules.add(new CosmeticsModule());
+            modules.add(new TargetHudModule());
 
-            // Removals
             modules.add(new NoHurtCamModule());
             modules.add(new LowFireModule());
-            modules.add(new AntiBlindnessModule());
             modules.add(new LowShieldModule());
+            modules.add(new AntiBlindnessModule());
             modules.add(new NoRenderModule());
 
-            // Misc
             modules.add(new FastPlaceModule());
             modules.add(new AutoToolModule());
             modules.add(new FreeCameraModule());
@@ -1561,13 +1265,6 @@ public class VisualModClient implements ClientModInitializer {
 
         public List<Module> getAllModules() { return modules; }
 
-        public <T extends Module> T getModule(Class<T> clazz) {
-            for (Module m : modules) {
-                if (clazz.isInstance(m)) return clazz.cast(m);
-            }
-            return null;
-        }
-
         public List<Module> getModulesByCategory(Category cat) {
             List<Module> list = new ArrayList<>();
             for (Module m : modules) {
@@ -1575,8 +1272,18 @@ public class VisualModClient implements ClientModInitializer {
             }
             return list;
         }
+
+        public Module getModule(Class<? extends Module> clazz) {
+            for (Module m : modules) {
+                if (m.getClass() == clazz) return m;
+            }
+            return null;
+        }
     }
 
+    // ==========================================
+    // CLICKGUI ЭКРАН
+    // ==========================================
     public static class ModernRefinedClickGui extends Screen {
         private final ModuleManager moduleManager;
         private final List<GuiColumn> columns = new ArrayList<>();
@@ -1587,7 +1294,7 @@ public class VisualModClient implements ClientModInitializer {
         private boolean wasMiddlePressed = false;
 
         public ModernRefinedClickGui(ModuleManager moduleManager) {
-            super(Text.literal("Refined ClickGUI"));
+            super(Text.literal("Delta Client"));
             this.moduleManager = moduleManager;
         }
 
@@ -1613,29 +1320,25 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
             context.fill(0, 0, this.width, this.height, 0x66000000);
-
             hoveredDescription = "";
             handleMouseInput(mouseX, mouseY);
 
-            for (GuiColumn col : columns) {
-                col.render(context, mouseX, mouseY);
-            }
+            for (GuiColumn col : columns) col.render(context, mouseX, mouseY);
 
             MinecraftClient mc = MinecraftClient.getInstance();
-
-            int cosBtnW = 100;
-            int cosBtnH = 18;
-            int cosBtnX = this.width - cosBtnW - 14;
-            int cosBtnY = 10;
-            boolean cosHover = mouseX >= cosBtnX && mouseX <= cosBtnX + cosBtnW && mouseY >= cosBtnY && mouseY <= cosBtnY + cosBtnH;
-            drawSmoothRect(context, cosBtnX, cosBtnY, cosBtnW, cosBtnH, cosHover ? 0xDD4338CA : 0xDD312E81, 0xFF818CF8);
-            drawStyledText(context, mc.textRenderer, "✦ Косметика", cosBtnX + 16, cosBtnY + 5, 0xFFFFFFFF);
-
             if (!hoveredDescription.isEmpty()) {
                 int textW = mc.textRenderer.getWidth(hoveredDescription);
                 int titleX = (this.width - textW) / 2;
-                drawStyledText(context, mc.textRenderer, hoveredDescription, titleX, 15, 0xFFFFFFFF);
+                drawTextSafe(context, mc.textRenderer, hoveredDescription, titleX, 15, 0xFFFFFFFF, true);
             }
+
+            int btnW = 90;
+            int btnH = 18;
+            int btnX = this.width - btnW - 14;
+            int btnY = 12;
+            boolean hovered = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
+            drawSmoothRect(context, btnX, btnY, btnW, btnH, hovered ? 0xDD4338CA : 0xDD312E81, 0xFF818CF8);
+            drawTextSafe(context, mc.textRenderer, "✦ Косметика", btnX + 11, btnY + 5, 0xFFFFFFFF, false);
 
             super.render(context, mouseX, mouseY, delta);
         }
@@ -1669,13 +1372,13 @@ public class VisualModClient implements ClientModInitializer {
         }
 
         private void dispatchClick(int mouseX, int mouseY, int button) {
-            int cosBtnW = 100;
-            int cosBtnH = 18;
-            int cosBtnX = this.width - cosBtnW - 14;
-            int cosBtnY = 10;
-            if (button == 0 && mouseX >= cosBtnX && mouseX <= cosBtnX + cosBtnW && mouseY >= cosBtnY && mouseY <= cosBtnY + cosBtnH) {
-                playClickSound();
+            int btnW = 90;
+            int btnH = 18;
+            int btnX = this.width - btnW - 14;
+            int btnY = 12;
+            if (button == 0 && mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH) {
                 MinecraftClient.getInstance().setScreen(new CosmeticsScreen(moduleManager));
+                playClickSound();
                 return;
             }
 
@@ -1708,7 +1411,6 @@ public class VisualModClient implements ClientModInitializer {
                 this.close();
                 return true;
             }
-
             return super.keyPressed(keyCode, scanCode, modifiers);
         }
 
@@ -1726,9 +1428,7 @@ public class VisualModClient implements ClientModInitializer {
         @Override
         public boolean shouldPause() { return false; }
 
-        public static void playClickSound() {
-            playSoundSafely(SoundEvents.UI_BUTTON_CLICK, 1.0f);
-        }
+        public static void playClickSound() { playSoundSafely(SoundEvents.UI_BUTTON_CLICK, 1.0f); }
 
         public static void drawSmoothRect(DrawContext context, int x, int y, int w, int h, int bg, int border) {
             context.fill(x + 1, y, x + w - 1, y + h, bg);
@@ -1742,264 +1442,6 @@ public class VisualModClient implements ClientModInitializer {
                 context.fill(x + w - 1, y + 1, x + w, y + h - 1, border);
             }
         }
-    }
-
-    public static class CosmeticsScreen extends Screen {
-        private final ModuleManager moduleManager;
-        private final CosmeticsModule cosmeticsModule;
-        private float playerRotation = 0.0f;
-        private boolean isDraggingPlayer = false;
-        private double lastMouseX = 0;
-
-        public CosmeticsScreen(ModuleManager moduleManager) {
-            super(Text.literal("Cosmetics Studio"));
-            this.moduleManager = moduleManager;
-            this.cosmeticsModule = moduleManager.getModule(CosmeticsModule.class);
-        }
-
-        @Override
-        public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-            context.fill(0, 0, this.width, this.height, 0x880A0A0F);
-
-            MinecraftClient mc = MinecraftClient.getInstance();
-            drawStyledText(context, mc.textRenderer, "✦ COSMETICS STUDIO", 26, 18, 0xFF818CF8);
-            drawStyledText(context, mc.textRenderer, "§7Управляйте своими клиентскими 3D аксессуарами", 26, 30, 0xFF94A3B8);
-
-            int viewX = 26;
-            int viewY = 48;
-            int viewW = this.width / 2 - 40;
-            int viewH = this.height - 68;
-
-            ModernRefinedClickGui.drawSmoothRect(context, viewX, viewY, viewW, viewH, 0xDD12111A, 0x44818CF8);
-
-            if (mc.player != null) {
-                int centerX = viewX + viewW / 2;
-                int centerY = viewY + viewH - 24;
-                int size = Math.min(viewH / 3, 75);
-
-                float targetRotX = (float) centerX - playerRotation;
-                float targetRotY = (float) (centerY - 55 - mouseY);
-                drawEntityPreviewSafely(context, centerX, centerY, size, targetRotX, targetRotY, mc.player);
-            }
-            drawStyledText(context, mc.textRenderer, "§8⟳ Зажмите ЛКМ на модели для вращения", viewX + (viewW - 170) / 2, viewY + viewH - 12, 0xFF64748B);
-
-            int setX = this.width / 2;
-            int setY = 48;
-            int setW = this.width / 2 - 26;
-            int setH = this.height - 68;
-
-            ModernRefinedClickGui.drawSmoothRect(context, setX, setY, setW, setH, 0xDD12111A, 0x22FFFFFF);
-
-            boolean enabled = cosmeticsModule.isEnabled();
-            int toggleBtnX = setX + 16;
-            int toggleBtnY = setY + 14;
-            int toggleBtnW = setW - 32;
-            int toggleBtnH = 22;
-            boolean hoverToggle = mouseX >= toggleBtnX && mouseX <= toggleBtnX + toggleBtnW && mouseY >= toggleBtnY && mouseY <= toggleBtnY + toggleBtnH;
-
-            int toggleBg = enabled ? 0xDD4338CA : (hoverToggle ? 0xDD2A2A38 : 0xDD1E1E28);
-            ModernRefinedClickGui.drawSmoothRect(context, toggleBtnX, toggleBtnY, toggleBtnW, toggleBtnH, toggleBg, enabled ? 0xFF818CF8 : 0x44FFFFFF);
-            drawStyledText(context, mc.textRenderer, enabled ? "✔ Аксессуары: Включены" : "✖ Аксессуары: Отключены", toggleBtnX + 12, toggleBtnY + 7, 0xFFFFFFFF);
-
-            int curY = toggleBtnY + 32;
-            for (Setting<?> s : cosmeticsModule.getSettings()) {
-                drawSettingControl(context, s, setX + 16, curY, setW - 32, mouseX, mouseY);
-                curY += 28;
-            }
-
-            int backBtnW = 100;
-            int backBtnH = 18;
-            int backBtnX = this.width - backBtnW - 26;
-            int backBtnY = 16;
-            boolean backHover = mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH;
-            ModernRefinedClickGui.drawSmoothRect(context, backBtnX, backBtnY, backBtnW, backBtnH, backHover ? 0xDD312E81 : 0xCC1A1A24, 0x44FFFFFF);
-            drawStyledText(context, mc.textRenderer, "← В ClickGUI", backBtnX + 16, backBtnY + 5, 0xFFFFFFFF);
-
-            super.render(context, mouseX, mouseY, delta);
-        }
-
-        private void drawEntityPreviewSafely(DrawContext context, int centerX, int centerY, int size, float mouseX, float mouseY, LivingEntity entity) {
-            if (entity == null) return;
-            try {
-                for (Method m : InventoryScreen.class.getDeclaredMethods()) {
-                    if (Modifier.isStatic(m.getModifiers())) {
-                        Class<?>[] p = m.getParameterTypes();
-                        if (p.length >= 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[p.length - 1])) {
-                            m.setAccessible(true);
-                            if (p.length == 10) {
-                                m.invoke(null, context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
-                                return;
-                            } else if (p.length == 8) {
-                                m.invoke(null, context, (float) centerX, (float) centerY, (float) size, null, null, null, entity);
-                                return;
-                            } else if (p.length == 7) {
-                                m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
-                                return;
-                            }
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (entity instanceof AbstractClientPlayerEntity player) {
-                try {
-                    Identifier skin = player.getSkinTextures().texture();
-                    if (skin != null) {
-                        context.drawTexture(skin, centerX - 32, centerY - 80, 64, 64, 8.0f, 8.0f, 8, 8, 64, 64);
-                        context.drawTexture(skin, centerX - 32, centerY - 80, 64, 64, 40.0f, 8.0f, 8, 8, 64, 64);
-                        return;
-                    }
-                } catch (Throwable ignored) {}
-            }
-            drawStyledText(context, mc.textRenderer, "[3D Preview]", centerX - 30, centerY - size, 0xFF818CF8);
-        }
-
-        private void drawSettingControl(DrawContext context, Setting<?> s, int x, int y, int w, int mouseX, int mouseY) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            drawStyledText(context, mc.textRenderer, s.getName(), x, y + 2, 0xFFE2E8F0);
-
-            if (s instanceof ModeSetting mode) {
-                int btnW = 90;
-                int btnH = 16;
-                int btnX = x + w - btnW;
-                int btnY = y;
-                boolean hov = mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= btnY && mouseY <= btnY + btnH;
-                ModernRefinedClickGui.drawSmoothRect(context, btnX, btnY, btnW, btnH, hov ? 0xEE2D2B3D : 0xEE1E1C2B, 0x44818CF8);
-                String val = mode.get();
-                int valW = mc.textRenderer.getWidth(val);
-                drawStyledText(context, mc.textRenderer, val, btnX + (btnW - valW) / 2, btnY + 4, 0xFF818CF8);
-            } else if (s instanceof BooleanSetting bool) {
-                int btnW = 42;
-                int btnH = 16;
-                int btnX = x + w - btnW;
-                int btnY = y;
-                int bg = bool.get() ? 0xFF6366F1 : 0xFF2A2A3C;
-                ModernRefinedClickGui.drawSmoothRect(context, btnX, btnY, btnW, btnH, bg, 0x44FFFFFF);
-                String state = bool.get() ? "ВКЛ" : "ВЫКЛ";
-                int sW = mc.textRenderer.getWidth(state);
-                drawStyledText(context, mc.textRenderer, state, btnX + (btnW - sW) / 2, btnY + 4, 0xFFFFFFFF);
-            } else if (s instanceof SliderSetting slider) {
-                int barW = 100;
-                int barH = 12;
-                int barX = x + w - barW;
-                int barY = y + 2;
-
-                context.fill(barX, barY, barX + barW, barY + barH, 0xFF1D1B28);
-                double pct = (slider.get() - slider.getMin()) / (slider.getMax() - slider.getMin());
-                int fillW = (int) (barW * MathHelper.clamp(pct, 0.0, 1.0));
-                context.fill(barX, barY, barX + fillW, barY + barH, 0xFF6366F1);
-
-                String vStr = String.format("%.2f%s", slider.get(), slider.getSuffix());
-                int vW = mc.textRenderer.getWidth(vStr);
-                drawStyledText(context, mc.textRenderer, vStr, barX + (barW - vW) / 2, barY + 2, 0xFFFFFFFF);
-            }
-        }
-
-        @Override
-        public boolean mouseClicked(double mouseX, double mouseY, int button) {
-            int viewX = 26;
-            int viewY = 48;
-            int viewW = this.width / 2 - 40;
-            int viewH = this.height - 68;
-
-            if (mouseX >= viewX && mouseX <= viewX + viewW && mouseY >= viewY && mouseY <= viewY + viewH) {
-                isDraggingPlayer = true;
-                lastMouseX = mouseX;
-                return true;
-            }
-
-            int backBtnW = 100;
-            int backBtnH = 18;
-            int backBtnX = this.width - backBtnW - 26;
-            int backBtnY = 16;
-            if (mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH) {
-                ModernRefinedClickGui.playClickSound();
-                MinecraftClient.getInstance().setScreen(new ModernRefinedClickGui(moduleManager));
-                return true;
-            }
-
-            int setX = this.width / 2;
-            int setY = 48;
-            int setW = this.width / 2 - 26;
-
-            int toggleBtnX = setX + 16;
-            int toggleBtnY = setY + 14;
-            int toggleBtnW = setW - 32;
-            int toggleBtnH = 22;
-
-            if (mouseX >= toggleBtnX && mouseX <= toggleBtnX + toggleBtnW && mouseY >= toggleBtnY && mouseY <= toggleBtnY + toggleBtnH) {
-                cosmeticsModule.toggle();
-                ModernRefinedClickGui.playClickSound();
-                return true;
-            }
-
-            int curY = toggleBtnY + 32;
-            for (Setting<?> s : cosmeticsModule.getSettings()) {
-                int itemX = setX + 16;
-                int itemW = setW - 32;
-                if (s instanceof ModeSetting mode) {
-                    int btnW = 90;
-                    int btnH = 16;
-                    int btnX = itemX + itemW - btnW;
-                    if (mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= curY && mouseY <= curY + btnH) {
-                        mode.cycle();
-                        ModernRefinedClickGui.playClickSound();
-                        return true;
-                    }
-                } else if (s instanceof BooleanSetting bool) {
-                    int btnW = 42;
-                    int btnH = 16;
-                    int btnX = itemX + itemW - btnW;
-                    if (mouseX >= btnX && mouseX <= btnX + btnW && mouseY >= curY && mouseY <= curY + btnH) {
-                        bool.toggle();
-                        ModernRefinedClickGui.playClickSound();
-                        return true;
-                    }
-                } else if (s instanceof SliderSetting slider) {
-                    int barW = 100;
-                    int barH = 12;
-                    int barX = itemX + itemW - barW;
-                    if (mouseX >= barX && mouseX <= barX + barW && mouseY >= curY && mouseY <= curY + barH) {
-                        double pct = (mouseX - barX) / (double) barW;
-                        double val = slider.getMin() + (slider.getMax() - slider.getMin()) * pct;
-                        slider.setValueClamped(val);
-                        return true;
-                    }
-                }
-                curY += 28;
-            }
-
-            return super.mouseClicked(mouseX, mouseY, button);
-        }
-
-        @Override
-        public boolean mouseReleased(double mouseX, double mouseY, int button) {
-            isDraggingPlayer = false;
-            return super.mouseReleased(mouseX, mouseY, button);
-        }
-
-        @Override
-        public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
-            if (isDraggingPlayer) {
-                playerRotation += (float) (mouseX - lastMouseX) * 1.4f;
-                lastMouseX = mouseX;
-                return true;
-            }
-            return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
-        }
-
-        @Override
-        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_RIGHT_SHIFT) {
-                this.close();
-                return true;
-            }
-            return super.keyPressed(keyCode, scanCode, modifiers);
-        }
-
-        @Override
-        public boolean shouldPause() { return false; }
     }
 
     public static class GuiColumn {
@@ -2026,9 +1468,7 @@ public class VisualModClient implements ClientModInitializer {
 
         public int getTotalContentHeight() {
             int h = 34;
-            for (GuiModuleCard card : cards) {
-                h += card.getTotalHeight() + 3;
-            }
+            for (GuiModuleCard card : cards) h += card.getTotalHeight() + 3;
             return h + 10;
         }
 
@@ -2040,13 +1480,12 @@ public class VisualModClient implements ClientModInitializer {
 
         public void render(DrawContext context, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-
             ModernRefinedClickGui.drawSmoothRect(context, x, y, width, height, 0xCC111116, 0x26FFFFFF);
 
             String headerText = category.getIcon() + "  " + category.getDisplayName();
             int headerW = mc.textRenderer.getWidth(headerText);
             int titleX = x + (width - headerW) / 2;
-            drawStyledText(context, mc.textRenderer, headerText, titleX, y + 9, 0xFFFFFFFF);
+            drawTextSafe(context, mc.textRenderer, headerText, titleX, y + 9, 0xFFFFFFFF, true);
 
             context.fill(x + 8, y + 25, x + width - 8, y + 26, 0x1AFFFFFF);
 
@@ -2068,11 +1507,8 @@ public class VisualModClient implements ClientModInitializer {
 
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
             if (mouseY < y + 28 || mouseY > y + height) return false;
-
             for (GuiModuleCard card : cards) {
-                if (card.mouseClicked(mouseX, mouseY, button)) {
-                    return true;
-                }
+                if (card.mouseClicked(mouseX, mouseY, button)) return true;
             }
             return false;
         }
@@ -2106,9 +1542,7 @@ public class VisualModClient implements ClientModInitializer {
         public int getTotalHeight() {
             int h = 23;
             if (expanded) {
-                for (GuiSettingWidget w : widgets) {
-                    h += w.getHeight() + 3;
-                }
+                for (GuiSettingWidget w : widgets) h += w.getHeight() + 3;
                 h += 4;
             }
             return h;
@@ -2119,10 +1553,7 @@ public class VisualModClient implements ClientModInitializer {
 
             MinecraftClient mc = MinecraftClient.getInstance();
             boolean hovered = mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + 23;
-
-            if (hovered) {
-                ModernRefinedClickGui.hoveredDescription = module.getDescription();
-            }
+            if (hovered) ModernRefinedClickGui.hoveredDescription = module.getDescription();
 
             int bg = module.isEnabled() ? 0xDD3730A3 : (hovered ? 0xDD22222E : 0xB8171720);
             int border = module.isEnabled() ? 0xEE818CF8 : (hovered ? 0x44FFFFFF : 0x1AFFFFFF);
@@ -2130,17 +1561,17 @@ public class VisualModClient implements ClientModInitializer {
             ModernRefinedClickGui.drawSmoothRect(context, x, y, width, 23, bg, border);
 
             int textColor = module.isEnabled() ? 0xFFFFFFFF : (hovered ? 0xFFE2E8F0 : 0xFF94A3B8);
-            drawStyledText(context, mc.textRenderer, module.getName(), x + 8, y + 7, textColor);
+            drawTextSafe(context, mc.textRenderer, module.getName(), x + 8, y + 7, textColor, false);
 
             String bindText = module.isListeningForBind() ? "§e[...]" : (module.getKeyBind() != GLFW.GLFW_KEY_UNKNOWN ? "§7[" + module.getBindName() + "]" : "");
             if (!bindText.isEmpty()) {
                 int bindW = mc.textRenderer.getWidth(bindText);
-                drawStyledText(context, mc.textRenderer, bindText, x + width - bindW - 20, y + 7, 0xFFFFFFFF);
+                drawTextSafe(context, mc.textRenderer, bindText, x + width - bindW - 20, y + 7, 0xFFFFFFFF, false);
             }
 
             if (!widgets.isEmpty()) {
                 int iconColor = expanded ? 0xFF818CF8 : (hovered ? 0xFFD1D5DB : 0xFF64748B);
-                drawStyledText(context, mc.textRenderer, "≡", x + width - 14, y + 7, iconColor);
+                drawTextSafe(context, mc.textRenderer, "≡", x + width - 14, y + 7, iconColor, false);
             }
 
             if (expanded) {
@@ -2163,12 +1594,10 @@ public class VisualModClient implements ClientModInitializer {
                     module.setListeningForBind(!module.isListeningForBind());
                     return true;
                 }
-
                 if (mouseX >= x + width - 18) {
                     if (!widgets.isEmpty()) expanded = !expanded;
                     return true;
                 }
-
                 if (button == 0) {
                     module.toggle();
                     return true;
@@ -2181,9 +1610,7 @@ public class VisualModClient implements ClientModInitializer {
             if (expanded) {
                 int widgetY = y + 27;
                 for (GuiSettingWidget w : widgets) {
-                    if (w.mouseClicked(x + 5, widgetY, width - 10, mouseX, mouseY, button)) {
-                        return true;
-                    }
+                    if (w.mouseClicked(x + 5, widgetY, width - 10, mouseX, mouseY, button)) return true;
                     widgetY += w.getHeight() + 3;
                 }
             }
@@ -2218,11 +1645,10 @@ public class VisualModClient implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
 
             String text = String.format("%s: §7%.2f%s", setting.getName(), setting.get(), setting.getSuffix());
-            drawStyledText(context, mc.textRenderer, text, x + 2, y + 2, 0xFFE2E8F0);
+            drawTextSafe(context, mc.textRenderer, text, x + 2, y + 2, 0xFFE2E8F0, false);
 
             int barY = y + 13;
             context.fill(x, barY, x + width, barY + 4, 0xFF222230);
-
             double pct = (setting.get() - setting.getMin()) / (setting.getMax() - setting.getMin());
             int fillW = (int) (width * MathHelper.clamp(pct, 0.0, 1.0));
             context.fill(x, barY, x + fillW, barY + 4, 0xFF6366F1);
@@ -2252,17 +1678,16 @@ public class VisualModClient implements ClientModInitializer {
         private final ModeSetting setting;
 
         public GuiModeWidget(ModeSetting setting) { this.setting = setting; }
-
         @Override public int getHeight() { return 17; }
 
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            drawStyledText(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1, false);
 
             String modeStr = "§8[§f" + setting.get() + "§8]";
             int modeW = mc.textRenderer.getWidth(modeStr);
-            drawStyledText(context, mc.textRenderer, modeStr, x + width - modeW - 2, y + 4, 0xFF818CF8);
+            drawTextSafe(context, mc.textRenderer, modeStr, x + width - modeW - 2, y + 4, 0xFF818CF8, false);
         }
 
         @Override
@@ -2279,13 +1704,12 @@ public class VisualModClient implements ClientModInitializer {
         private final BooleanSetting setting;
 
         public GuiBooleanWidget(BooleanSetting setting) { this.setting = setting; }
-
         @Override public int getHeight() { return 17; }
 
         @Override
         public void render(DrawContext context, int x, int y, int width, int mouseX, int mouseY) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            drawStyledText(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1);
+            drawTextSafe(context, mc.textRenderer, setting.getName(), x + 2, y + 4, 0xFFCBD5E1, false);
 
             int btnX = x + width - 13;
             int col = setting.get() ? 0xFF6366F1 : 0xFF2A2A3C;
@@ -2301,149 +1725,759 @@ public class VisualModClient implements ClientModInitializer {
             return false;
         }
     }
-}
 
+    // ==========================================
+    // COSMETICS STUDIO ЭКРАН
+    // ==========================================
+    public static class CosmeticsScreen extends Screen {
+        private final ModuleManager moduleManager;
+        private float playerRotation = 0.0f;
+        private boolean draggingPlayer = false;
+        private double lastDragX = 0;
 
-@Mixin(GameRenderer.class)
-class MixinGameRenderer {
-    @Inject(method = "getBasicProjectionMatrix", at = @At("RETURN"), cancellable = true)
-    private void injectAspectRatio(double fov, CallbackInfoReturnable<Matrix4f> cir) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.AspectRatioModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.AspectRatioModule.class);
-        if (module != null && module.isEnabled()) {
-            MinecraftClient client = MinecraftClient.getInstance();
-            float originalRatio = (float) client.getWindow().getFramebufferWidth() / (float) client.getWindow().getFramebufferHeight();
-            float targetRatio = module.getRatio();
+        public CosmeticsScreen(ModuleManager moduleManager) {
+            super(Text.literal("Cosmetics Studio"));
+            this.moduleManager = moduleManager;
+        }
 
-            Matrix4f matrix = new Matrix4f(cir.getReturnValue());
-            matrix.scale(originalRatio / targetRatio, 1.0f, 1.0f);
-            cir.setReturnValue(matrix);
+        @Override
+        public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+            context.fill(0, 0, this.width, this.height, 0xDD0C0B12);
+
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawTextSafe(context, mc.textRenderer, "✦ COSMETICS STUDIO", 24, 18, 0xFF818CF8, false);
+            drawTextSafe(context, mc.textRenderer, "Управляйте своими клиентскими 3D аксессуарами", 24, 30, 0xFF94A3B8, false);
+
+            int backBtnW = 92;
+            int backBtnH = 20;
+            int backBtnX = this.width - backBtnW - 24;
+            int backBtnY = 18;
+            boolean backHovered = mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH;
+            ModernRefinedClickGui.drawSmoothRect(context, backBtnX, backBtnY, backBtnW, backBtnH, backHovered ? 0xDD312E81 : 0xAA1E1B4B, 0xFF6366F1);
+            drawTextSafe(context, mc.textRenderer, "← В ClickGUI", backBtnX + 12, backBtnY + 6, 0xFFFFFFFF, false);
+
+            int previewX = 24;
+            int previewY = 50;
+            int previewW = (this.width / 2) - 34;
+            int previewH = this.height - 74;
+
+            ModernRefinedClickGui.drawSmoothRect(context, previewX, previewY, previewW, previewH, 0x99111019, 0x336366F1);
+
+            int centerX = previewX + previewW / 2;
+            int centerY = previewY + previewH - 30;
+            int size = (int) (previewH * 0.45f);
+
+            drawTextSafe(context, mc.textRenderer, "3D Персонаж", previewX + 14, previewY + 14, 0xFFE2E8F0, false);
+            drawTextSafe(context, mc.textRenderer, "Зажмите ЛКМ на модели для вращения", previewX + 14, previewY + previewH - 18, 0xFF64748B, false);
+
+            int settingsX = (this.width / 2) + 10;
+            int settingsY = 50;
+            int settingsW = (this.width / 2) - 34;
+            int settingsH = this.height - 74;
+
+            ModernRefinedClickGui.drawSmoothRect(context, settingsX, settingsY, settingsW, settingsH, 0xCC111019, 0x446366F1);
+
+            CosmeticsModule cosm = (CosmeticsModule) moduleManager.getModule(CosmeticsModule.class);
+            if (cosm != null) {
+                int currY = settingsY + 16;
+
+                boolean activeHover = mouseX >= settingsX + 14 && mouseX <= settingsX + settingsW - 14 && mouseY >= currY && mouseY <= currY + 22;
+                int actBg = cosm.isEnabled() ? 0xDD3730A3 : (activeHover ? 0xDD22222E : 0xB8171720);
+                ModernRefinedClickGui.drawSmoothRect(context, settingsX + 14, currY, settingsW - 28, 22, actBg, cosm.isEnabled() ? 0xFF818CF8 : 0x33FFFFFF);
+                String actStr = cosm.isEnabled() ? "✔ Аксессуары: Включены" : "✖ Аксессуары: Отключены";
+                drawTextSafe(context, mc.textRenderer, actStr, settingsX + 24, currY + 7, 0xFFFFFFFF, false);
+                currY += 32;
+
+                renderStudioOption(context, "Крылья", cosm.wingStyle.get(), settingsX + 14, currY, settingsW - 28, mouseX, mouseY);
+                currY += 28;
+
+                renderStudioSlider(context, "Размах крыльев", cosm.wingScale.get(), cosm.wingScale.getMin(), cosm.wingScale.getMax(), settingsX + 14, currY, settingsW - 28, mouseX, mouseY);
+                currY += 34;
+
+                renderStudioOption(context, "Плащ", cosm.capeStyle.get(), settingsX + 14, currY, settingsW - 28, mouseX, mouseY);
+                currY += 28;
+
+                renderStudioOption(context, "Голова", cosm.headAccessory.get(), settingsX + 14, currY, settingsW - 28, mouseX, mouseY);
+                currY += 28;
+
+                renderStudioToggle(context, "Катана на спине", cosm.backKatana.get(), settingsX + 14, currY, settingsW - 28, mouseX, mouseY);
+            }
+
+            super.render(context, mouseX, mouseY, delta);
+        }
+
+        private void renderStudioOption(DrawContext context, String label, String value, int x, int y, int w, int mx, int my) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawTextSafe(context, mc.textRenderer, label, x, y + 4, 0xFFE2E8F0, false);
+
+            int btnW = 90;
+            int btnX = x + w - btnW;
+            boolean hov = mx >= btnX && mx <= btnX + btnW && my >= y && my <= y + 18;
+            ModernRefinedClickGui.drawSmoothRect(context, btnX, y, btnW, 18, hov ? 0xDD2A2A3E : 0xAA181824, 0x446366F1);
+
+            int strW = mc.textRenderer.getWidth(value);
+            drawTextSafe(context, mc.textRenderer, value, btnX + (btnW - strW) / 2, y + 5, 0xFF818CF8, false);
+        }
+
+        private void renderStudioToggle(DrawContext context, String label, boolean val, int x, int y, int w, int mx, int my) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawTextSafe(context, mc.textRenderer, label, x, y + 4, 0xFFE2E8F0, false);
+
+            int btnW = 44;
+            int btnX = x + w - btnW;
+            boolean hov = mx >= btnX && mx <= btnX + btnW && my >= y && my <= y + 18;
+            int col = val ? 0xFF6366F1 : 0xFF272738;
+            ModernRefinedClickGui.drawSmoothRect(context, btnX, y, btnW, 18, col, hov ? 0xFFFFFFFF : 0x44FFFFFF);
+            String txt = val ? "ВКЛ" : "ВЫКЛ";
+            int tw = mc.textRenderer.getWidth(txt);
+            drawTextSafe(context, mc.textRenderer, txt, btnX + (btnW - tw) / 2, y + 5, 0xFFFFFFFF, false);
+        }
+
+        private void renderStudioSlider(DrawContext context, String label, double val, double min, double max, int x, int y, int w, int mx, int my) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            String info = String.format("%s: §7%.2fx", label, val);
+            drawTextSafe(context, mc.textRenderer, info, x, y, 0xFFE2E8F0, false);
+
+            int barY = y + 12;
+            context.fill(x, barY, x + w, barY + 5, 0xFF222230);
+            double pct = (val - min) / (max - min);
+            int fillW = (int) (w * MathHelper.clamp(pct, 0.0, 1.0));
+            context.fill(x, barY, x + fillW, barY + 5, 0xFF6366F1);
+        }
+
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            int backBtnW = 92;
+            int backBtnH = 20;
+            int backBtnX = this.width - backBtnW - 24;
+            int backBtnY = 18;
+            if (button == 0 && mouseX >= backBtnX && mouseX <= backBtnX + backBtnW && mouseY >= backBtnY && mouseY <= backBtnY + backBtnH) {
+                MinecraftClient.getInstance().setScreen(new ModernRefinedClickGui(moduleManager));
+                ModernRefinedClickGui.playClickSound();
+                return true;
+            }
+
+            int previewX = 24;
+            int previewY = 50;
+            int previewW = (this.width / 2) - 34;
+            int previewH = this.height - 74;
+            if (button == 0 && mouseX >= previewX && mouseX <= previewX + previewW && mouseY >= previewY && mouseY <= previewY + previewH) {
+                draggingPlayer = true;
+                lastDragX = mouseX;
+                return true;
+            }
+
+            int settingsX = (this.width / 2) + 10;
+            int settingsY = 50;
+            int settingsW = (this.width / 2) - 34;
+
+            CosmeticsModule cosm = (CosmeticsModule) moduleManager.getModule(CosmeticsModule.class);
+            if (cosm != null && button == 0) {
+                int currY = settingsY + 16;
+                if (mouseX >= settingsX + 14 && mouseX <= settingsX + settingsW - 14 && mouseY >= currY && mouseY <= currY + 22) {
+                    cosm.toggle();
+                    ModernRefinedClickGui.playClickSound();
+                    return true;
+                }
+                currY += 32;
+
+                int optBtnW = 90;
+                int optX = settingsX + 14 + settingsW - 28 - optBtnW;
+                if (mouseX >= optX && mouseX <= optX + optBtnW && mouseY >= currY && mouseY <= currY + 18) {
+                    cosm.wingStyle.cycle();
+                    ModernRefinedClickGui.playClickSound();
+                    return true;
+                }
+                currY += 28;
+
+                if (mouseX >= settingsX + 14 && mouseX <= settingsX + settingsW - 14 && mouseY >= currY + 8 && mouseY <= currY + 20) {
+                    double pct = (mouseX - (settingsX + 14)) / (double) (settingsW - 28);
+                    cosm.wingScale.setValueClamped(cosm.wingScale.getMin() + (cosm.wingScale.getMax() - cosm.wingScale.getMin()) * pct);
+                    return true;
+                }
+                currY += 34;
+
+                if (mouseX >= optX && mouseX <= optX + optBtnW && mouseY >= currY && mouseY <= currY + 18) {
+                    cosm.capeStyle.cycle();
+                    ModernRefinedClickGui.playClickSound();
+                    return true;
+                }
+                currY += 28;
+
+                if (mouseX >= optX && mouseX <= optX + optBtnW && mouseY >= currY && mouseY <= currY + 18) {
+                    cosm.headAccessory.cycle();
+                    ModernRefinedClickGui.playClickSound();
+                    return true;
+                }
+                currY += 28;
+
+                int tglW = 44;
+                int tglX = settingsX + 14 + settingsW - 28 - tglW;
+                if (mouseX >= tglX && mouseX <= tglX + tglW && mouseY >= currY && mouseY <= currY + 18) {
+                    cosm.backKatana.toggle();
+                    ModernRefinedClickGui.playClickSound();
+                    return true;
+                }
+            }
+
+            return super.mouseClicked(mouseX, mouseY, button);
+        }
+
+        @Override
+        public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            if (button == 0) draggingPlayer = false;
+            return super.mouseReleased(mouseX, mouseY, button);
+        }
+
+        @Override
+        public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+            if (draggingPlayer) {
+                playerRotation += (float) (mouseX - lastDragX) * 1.5f;
+                lastDragX = mouseX;
+                return true;
+            }
+            return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+        }
+
+        @Override
+        public boolean shouldPause() { return false; }
+    }
+
+    // =========================================================================
+    // ГЛАВНОЕ МЕНЮ (CUSTOM MAIN MENU) ПО СУРСУ И СКРИНШОТУ
+    // =========================================================================
+    public static class CustomTitleScreen extends Screen {
+        private static final float BTN_W = 210.0f;
+        private static final float BTN_H = 34.0f;
+        private static final float BTN_GAP = 9.0f;
+        private static final float ENTER_OFFSET_Y = 35.0f;
+
+        private final List<MenuButton> mainButtons = new ArrayList<>();
+        private final List<GraphicPresetButton> presetButtons = new ArrayList<>();
+        private final Map<String, Float> buttonAnimMap = new HashMap<>();
+
+        private final List<CursorParticle> cursorParticles = new ArrayList<>();
+        private final List<BackgroundStar> backgroundStars = new ArrayList<>();
+        private final List<ClickSpark> clickSparks = new ArrayList<>();
+        private final Random random = new Random();
+
+        private float openProgress = 0.0f;
+        private long lastFrame = System.nanoTime();
+
+        public static String currentMenuPreset = "Medium";
+        public static int particlesPerFrame = 2;
+        public static float menuAnimSpeed = 16.0f;
+        public static int vignetteAlpha = 0x25;
+
+        private static final int COLOR_BG_OVERLAY      = 0x770C081A;
+        private static final int COLOR_CYAN_ACCENT     = 0xFF00E5FF;
+        private static final int COLOR_PURPLE_ACCENT   = 0xFFB14EFF;
+        private static final int COLOR_BTN_IDLE        = 0xAA160D2E;
+        private static final int COLOR_BTN_HOVER       = 0xDD411A8C;
+        private static final int COLOR_BTN_STROKE_IDLE = 0x33B14EFF;
+        private static final int COLOR_BTN_STROKE_HOV  = 0xFFB14EFF;
+
+        private static final Identifier CLOUD_BG = Identifier.of(MOD_ID, "textures/gui/background.png");
+
+        public CustomTitleScreen() {
+            super(Text.literal("Delta Client"));
+        }
+
+        private float getHoverAnim(String key, boolean hovered, float delta) {
+            float cur = buttonAnimMap.getOrDefault(key, 0.0f);
+            float target = hovered ? 1.0f : 0.0f;
+            float step = delta * (menuAnimSpeed * 0.4f);
+            cur = MathHelper.lerp(step, cur, target);
+            cur = MathHelper.clamp(cur, 0.0f, 1.0f);
+            buttonAnimMap.put(key, cur);
+            return cur;
+        }
+
+        @Override
+        protected void init() {
+            this.mainButtons.clear();
+            this.presetButtons.clear();
+            this.openProgress = 0.0f;
+
+            int physW = this.width;
+            int physH = this.height;
+
+            if (this.backgroundStars.isEmpty()) {
+                for (int i = 0; i < 50; i++) {
+                    this.backgroundStars.add(new BackgroundStar(
+                            random.nextFloat() * physW,
+                            random.nextFloat() * physH,
+                            1.0f + random.nextFloat() * 2.0f,
+                            10.0f + random.nextFloat() * 25.0f,
+                            random.nextFloat() * 0.7f + 0.2f
+                    ));
+                }
+            }
+
+            float cx = physW / 2.0f;
+            int rowsCount = 4;
+            float totalH = rowsCount * BTN_H + (rowsCount - 1) * BTN_GAP;
+            float startY = (physH - totalH) / 2.0f + 15.0f;
+
+            this.mainButtons.add(new MenuButton("Одиночная игра", cx - BTN_W / 2.0f, startY, BTN_W, BTN_H,
+                    () -> this.client.setScreen(new SelectWorldScreen(this))));
+
+            this.mainButtons.add(new MenuButton("Сетевая игра", cx - BTN_W / 2.0f, startY + (BTN_H + BTN_GAP), BTN_W, BTN_H,
+                    () -> this.client.setScreen(new MultiplayerScreen(this))));
+
+            this.mainButtons.add(new MenuButton("Косметика и Студия", cx - BTN_W / 2.0f, startY + (BTN_H + BTN_GAP) * 2, BTN_W, BTN_H,
+                    () -> this.client.setScreen(new CosmeticsScreen(VisualModClient.INSTANCE.getModuleManager()))));
+
+            float halfW = BTN_W * 0.485f;
+            float rowY = startY + (BTN_H + BTN_GAP) * 3;
+            float leftX = cx - BTN_W / 2.0f;
+            float rightX = cx + BTN_W / 2.0f - halfW;
+
+            this.mainButtons.add(new MenuButton("Настройки", leftX, rowY, halfW, BTN_H,
+                    () -> this.client.setScreen(new OptionsScreen(this, this.client.options))));
+
+            this.mainButtons.add(new MenuButton("Выход", rightX, rowY, halfW, BTN_H,
+                    () -> this.client.scheduleStop()));
+
+            float presetX = 20.0f;
+            float presetY = physH - 38.0f;
+            float presetW = 54.0f;
+            float presetH = 22.0f;
+            float presetGap = 6.0f;
+
+            String[] presets = {"Low", "Medium", "High", "Ultra"};
+            for (int i = 0; i < presets.length; i++) {
+                String presetName = presets[i];
+                float bx = presetX + i * (presetW + presetGap);
+                this.presetButtons.add(new GraphicPresetButton(presetName, bx, presetY, presetW, presetH, () -> {
+                    currentMenuPreset = presetName;
+                    applyMenuPreset(presetName);
+                }));
+            }
+        }
+
+        private void applyMenuPreset(String preset) {
+            switch (preset) {
+                case "Low" -> {
+                    particlesPerFrame = 0;
+                    menuAnimSpeed = 28.0f;
+                    vignetteAlpha = 0x10;
+                }
+                case "Medium" -> {
+                    particlesPerFrame = 2;
+                    menuAnimSpeed = 16.0f;
+                    vignetteAlpha = 0x25;
+                }
+                case "High" -> {
+                    particlesPerFrame = 4;
+                    menuAnimSpeed = 12.0f;
+                    vignetteAlpha = 0x40;
+                }
+                case "Ultra" -> {
+                    particlesPerFrame = 8;
+                    menuAnimSpeed = 8.0f;
+                    vignetteAlpha = 0x55;
+                }
+            }
+        }
+
+        private String getGreeting() {
+            int hour = LocalTime.now().getHour();
+            if (hour >= 4 && hour < 12) return "Доброе утро";
+            if (hour >= 12 && hour < 18) return "Добрый день";
+            if (hour >= 18 && hour < 23) return "Добрый вечер";
+            return "Доброй ночи";
+        }
+
+        @Override
+        public boolean shouldPause() { return false; }
+
+        @Override
+        public void render(DrawContext context, int mouseX, int mouseY, float deltaTick) {
+            long now = System.nanoTime();
+            float delta = (now - this.lastFrame) / 1_000_000_000.0f;
+            this.lastFrame = now;
+
+            int physW = this.width;
+            int physH = this.height;
+
+            // 1. Отрисовка фиолетового облачного фона
+            try {
+                RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
+                context.drawTexture(CLOUD_BG, 0, 0, 0, 0.0f, 0.0f, physW, physH, physW, physH);
+            } catch (Throwable ignored) {
+                context.fill(0, 0, physW, physH, 0xFF140F2D);
+            }
+
+            // 2. Полупрозрачный темный оверлей
+            context.fill(0, 0, physW, physH, COLOR_BG_OVERLAY);
+
+            // 3. Параллакс-сетка из сурса
+            drawTransparentPurpleGrid(context, physW, physH, mouseX, mouseY);
+
+            // 4. Падающие звёзды
+            drawBackgroundStars(context, physW, physH, delta);
+
+            // 5. Виньетка
+            int topDark = (vignetteAlpha / 2) << 24 | 0x070614;
+            int botDark = vignetteAlpha << 24 | 0x070614;
+            context.fillGradient(0, 0, physW, physH, topDark, botDark);
+
+            // 6. Анимация входа
+            this.openProgress = Math.min(1.0f, this.openProgress + delta * 3.5f);
+            float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
+            float offsetY = (1.0f - eased) * ENTER_OFFSET_Y;
+
+            updateAndDrawCursorParticles(context, mouseX, mouseY, delta);
+            updateAndDrawClickSparks(context, delta);
+
+            context.getMatrices().push();
+            context.getMatrices().translate(0.0f, offsetY, 0.0f);
+
+            // 7. Заголовок и приветствие
+            drawGreetingHeader(context, physW);
+
+            // 8. Кнопки
+            drawMainButtons(context, mouseX, mouseY - offsetY, delta);
+            drawPresetButtons(context, mouseX, mouseY - offsetY, delta);
+
+            // 9. Виджет информации
+            drawSystemInfoWidget(context, physW, physH);
+            drawDisclaimer(context, physH);
+
+            context.getMatrices().pop();
+            super.render(context, mouseX, mouseY, deltaTick);
+        }
+
+        private void drawTransparentPurpleGrid(DrawContext context, int physW, int physH, float mx, float my) {
+            float moveX = (mx - physW / 2.0f) * 0.012f;
+            float moveY = (my - physH / 2.0f) * 0.012f;
+            float gridSize = 45.0f;
+            int gridColor = 0x187B2CBF;
+
+            for (float x = moveX % gridSize; x < physW; x += gridSize) {
+                context.fill((int) x, 0, (int) x + 1, physH, gridColor);
+            }
+            for (float y = moveY % gridSize; y < physH; y += gridSize) {
+                context.fill(0, (int) y, physW, (int) y + 1, gridColor);
+            }
+        }
+
+        private void drawBackgroundStars(DrawContext context, int physW, int physH, float delta) {
+            for (BackgroundStar star : this.backgroundStars) {
+                star.update(delta, physW, physH);
+                int starAlpha = (int) (star.alpha * 255.0f) << 24;
+                int starColor = starAlpha | 0x00E0FFFF;
+                context.fill((int) star.x, (int) star.y, (int) (star.x + star.size), (int) (star.y + star.size), starColor);
+            }
+        }
+
+        private void updateAndDrawCursorParticles(DrawContext context, float mx, float my, float delta) {
+            if (particlesPerFrame > 0 && mx >= 0 && my >= 0) {
+                for (int i = 0; i < particlesPerFrame; i++) {
+                    float vx = (random.nextFloat() - 0.5f) * 30.0f;
+                    float vy = (random.nextFloat() - 0.5f) * 30.0f;
+                    float size = 1.5f + random.nextFloat() * 2.0f;
+                    float life = 0.3f + random.nextFloat() * 0.4f;
+                    int color = random.nextBoolean() ? COLOR_CYAN_ACCENT : COLOR_PURPLE_ACCENT;
+                    cursorParticles.add(new CursorParticle(mx, my, vx, vy, size, life, color));
+                }
+            }
+
+            Iterator<CursorParticle> it = cursorParticles.iterator();
+            while (it.hasNext()) {
+                CursorParticle p = it.next();
+                p.update(delta);
+                if (p.isDead()) {
+                    it.remove();
+                } else {
+                    int particleColor = ((int) (p.getAlpha() * 255.0f) << 24) | (p.color & 0x00FFFFFF);
+                    context.fill((int) (p.x - p.size / 2.0f), (int) (p.y - p.size / 2.0f), (int) (p.x + p.size / 2.0f), (int) (p.y + p.size / 2.0f), particleColor);
+                }
+            }
+        }
+
+        private void updateAndDrawClickSparks(DrawContext context, float delta) {
+            Iterator<ClickSpark> it = clickSparks.iterator();
+            while (it.hasNext()) {
+                ClickSpark s = it.next();
+                s.update(delta);
+                if (s.isDead()) {
+                    it.remove();
+                } else {
+                    int sparkColor = ((int) (s.getAlpha() * 255.0f) << 24) | (s.color & 0x00FFFFFF);
+                    context.fill((int) (s.x - s.size / 2.0f), (int) (s.y - s.size / 2.0f), (int) (s.x + s.size / 2.0f), (int) (s.y + s.size / 2.0f), sparkColor);
+                }
+            }
+        }
+
+        private void drawGreetingHeader(DrawContext context, int physW) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            String username = mc.getSession() != null ? mc.getSession().getUsername() : "Player";
+            String welcomeText = getGreeting() + ", " + username + "!";
+
+            int w = mc.textRenderer.getWidth(welcomeText);
+            drawTextSafe(context, mc.textRenderer, welcomeText, (physW - w) / 2, 70, 0xFFE0D8F5, true);
+
+            String title = "DELTA CLIENT";
+            int tw = mc.textRenderer.getWidth(title);
+            drawTextSafe(context, mc.textRenderer, "§b§l" + title, (physW - tw) / 2, 52, 0xFF00E5FF, true);
+        }
+
+        private void drawMainButtons(DrawContext context, double mx, double my, float delta) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+
+            for (MenuButton btn : this.mainButtons) {
+                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+                float k = getHoverAnim(btn.label, hovered, delta);
+
+                int bgColor = lerpColor(COLOR_BTN_IDLE, COLOR_BTN_HOVER, k);
+                int strokeColor = lerpColor(COLOR_BTN_STROKE_IDLE, COLOR_BTN_STROKE_HOV, k);
+
+                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) btn.y, (int) btn.w, (int) btn.h, bgColor, strokeColor);
+
+                if (k > 0.01f) {
+                    int glowAlpha = ((int) (k * 255.0f) << 24) | (COLOR_PURPLE_ACCENT & 0x00FFFFFF);
+                    context.fill((int) btn.x + 4, (int) btn.y + 1, (int) (btn.x + btn.w - 4), (int) btn.y + 3, glowAlpha);
+                }
+
+                int textColor = lerpColor(0xFFD8D2F0, 0xFFFFFFFF, k);
+                int textW = mc.textRenderer.getWidth(btn.label);
+                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - textW) / 2.0f), (int) (btn.y + (btn.h - 8) / 2.0f), textColor, false);
+            }
+        }
+
+        private void drawPresetButtons(DrawContext context, double mx, double my, float delta) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+
+            for (GraphicPresetButton btn : this.presetButtons) {
+                boolean isSelected = btn.label.equalsIgnoreCase(currentMenuPreset);
+                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+                float k = getHoverAnim("preset_" + btn.label, hovered || isSelected, delta);
+
+                int btnBg = isSelected ? 0x887B2CBF : lerpColor(0x331C103B, 0x665A189A, k);
+                int btnBorder = isSelected ? COLOR_PURPLE_ACCENT : lerpColor(0x44B14EFF, 0xAA7B2CBF, k);
+
+                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) btn.y, (int) btn.w, (int) btn.h, btnBg, btnBorder);
+
+                int textColor = isSelected ? 0xFFFFFFFF : lerpColor(0xFFA09AB8, 0xFFFFFFFF, k);
+                int tw = mc.textRenderer.getWidth(btn.label);
+                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - tw) / 2.0f), (int) (btn.y + (btn.h - 8) / 2.0f), textColor, false);
+            }
+        }
+
+        private void drawSystemInfoWidget(DrawContext context, int physW, int physH) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            int fps = mc.getCurrentFps();
+            String infoStr = "Delta Visuals 1.0.0 | FPS: " + fps + " | Fabric 1.21.11";
+
+            int strW = mc.textRenderer.getWidth(infoStr);
+            float x = physW - strW - 20.0f;
+            float y = physH - 26.0f;
+            drawTextSafe(context, mc.textRenderer, infoStr, (int) x, (int) y, 0x77A09AB8, false);
+        }
+
+        private void drawDisclaimer(DrawContext context, int physH) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            float disclaimerX = 20.0f;
+            float disclaimerY = physH - 62.0f;
+            int disclaimerColor = 0x77A09AB8;
+
+            drawTextSafe(context, mc.textRenderer, "Delta Client is not affiliated with Mojang or Microsoft Corporation.", (int) disclaimerX, (int) disclaimerY, disclaimerColor, false);
+            drawTextSafe(context, mc.textRenderer, "For educational and informational purposes only.", (int) disclaimerX, (int) disclaimerY + 10, disclaimerColor, false);
+        }
+
+        @Override
+        public boolean mouseClicked(double mx, double my, int button) {
+            if (button != 0) return super.mouseClicked(mx, my, button);
+
+            float eased = 1.0f - (float) Math.pow(1.0f - this.openProgress, 3);
+            float offsetY = (1.0f - eased) * ENTER_OFFSET_Y;
+
+            spawnClickSparks((float) mx, (float) my);
+
+            for (MenuButton btn : this.mainButtons) {
+                if (mx >= btn.x && mx <= btn.x + btn.w && (my - offsetY) >= btn.y && (my - offsetY) <= btn.y + btn.h) {
+                    if (btn.action != null) {
+                        btn.action.run();
+                        ModernRefinedClickGui.playClickSound();
+                    }
+                    return true;
+                }
+            }
+
+            for (GraphicPresetButton btn : this.presetButtons) {
+                if (mx >= btn.x && mx <= btn.x + btn.w && (my - offsetY) >= btn.y && (my - offsetY) <= btn.y + btn.h) {
+                    if (btn.action != null) {
+                        btn.action.run();
+                        ModernRefinedClickGui.playClickSound();
+                    }
+                    return true;
+                }
+            }
+
+            return super.mouseClicked(mx, my, button);
+        }
+
+        private void spawnClickSparks(float x, float y) {
+            for (int i = 0; i < 10; i++) {
+                float angle = random.nextFloat() * (float) Math.PI * 2.0f;
+                float speed = 30.0f + random.nextFloat() * 70.0f;
+                float vx = (float) Math.cos(angle) * speed;
+                float vy = (float) Math.sin(angle) * speed;
+                float size = 2.0f + random.nextFloat() * 2.5f;
+                float life = 0.2f + random.nextFloat() * 0.3f;
+                int color = random.nextBoolean() ? COLOR_CYAN_ACCENT : COLOR_PURPLE_ACCENT;
+                clickSparks.add(new ClickSpark(x, y, vx, vy, size, life, color));
+            }
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) return false;
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        private static int lerpColor(int c1, int c2, float t) {
+            t = MathHelper.clamp(t, 0.0f, 1.0f);
+            int a1 = (c1 >> 24) & 0xFF, r1 = (c1 >> 16) & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = c1 & 0xFF;
+            int a2 = (c2 >> 24) & 0xFF, r2 = (c2 >> 16) & 0xFF, g2 = (c2 >> 8) & 0xFF, b2 = c2 & 0xFF;
+            int a = (int) (a1 + (a2 - a1) * t);
+            int r = (int) (r1 + (r2 - r1) * t);
+            int g = (int) (g1 + (g2 - g1) * t);
+            int b = (int) (b1 + (b2 - b1) * t);
+            return (a << 24) | (r << 16) | (g << 8) | b;
+        }
+
+        private static class CursorParticle {
+            float x, y, vx, vy, size, maxLife, life;
+            int color;
+
+            public CursorParticle(float x, float y, float vx, float vy, float size, float maxLife, int color) {
+                this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+                this.size = size; this.maxLife = maxLife; this.life = maxLife;
+                this.color = color;
+            }
+
+            public void update(float delta) {
+                this.x += this.vx * delta;
+                this.y += this.vy * delta;
+                this.life -= delta;
+            }
+
+            public boolean isDead() { return this.life <= 0; }
+            public float getAlpha() { return Math.max(0.0f, this.life / this.maxLife); }
+        }
+
+        private static class ClickSpark {
+            float x, y, vx, vy, size, maxLife, life;
+            int color;
+
+            public ClickSpark(float x, float y, float vx, float vy, float size, float maxLife, int color) {
+                this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+                this.size = size; this.maxLife = maxLife; this.life = maxLife;
+                this.color = color;
+            }
+
+            public void update(float delta) {
+                this.x += this.vx * delta;
+                this.y += this.vy * delta;
+                this.life -= delta;
+            }
+
+            public boolean isDead() { return this.life <= 0; }
+            public float getAlpha() { return Math.max(0.0f, this.life / this.maxLife); }
+        }
+
+        private static class BackgroundStar {
+            float x, y, size, speed, alpha;
+
+            public BackgroundStar(float x, float y, float size, float speed, float alpha) {
+                this.x = x; this.y = y; this.size = size; this.speed = speed; this.alpha = alpha;
+            }
+
+            public void update(float delta, int physW, int physH) {
+                this.y -= this.speed * delta;
+                if (this.y < -10) {
+                    this.y = physH + 10;
+                    this.x = new Random().nextFloat() * physW;
+                }
+            }
+        }
+
+        private static class MenuButton {
+            final String label;
+            final float x, y, w, h;
+            final Runnable action;
+
+            public MenuButton(String label, float x, float y, float w, float h, Runnable action) {
+                this.label = label; this.x = x; this.y = y; this.w = w; this.h = h;
+                this.action = action;
+            }
+        }
+
+        private static class GraphicPresetButton {
+            final String label;
+            final float x, y, w, h;
+            final Runnable action;
+
+            public GraphicPresetButton(String label, float x, float y, float w, float h, Runnable action) {
+                this.label = label; this.x = x; this.y = y; this.w = w; this.h = h;
+                this.action = action;
+            }
         }
     }
 
-    @Inject(method = "tiltViewWhenHurt", at = @At("HEAD"), cancellable = true)
-    private void injectNoHurtCam(MatrixStack matrices, float tickDelta, CallbackInfo ci) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.NoHurtCamModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoHurtCamModule.class);
-        if (module != null && module.isEnabled()) {
-            ci.cancel();
-        }
-    }
-}
-
-@Mixin(InGameHud.class)
-class MixinInGameHud {
-    @Inject(method = "renderCrosshair", at = @At("HEAD"), cancellable = true)
-    private void injectHideVanillaCrosshair(DrawContext context, RenderTickCounter tickCounter, CallbackInfo ci) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.CrosshairModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.CrosshairModule.class);
-        if (module != null && module.isEnabled()) {
-            ci.cancel();
+    // ==========================================
+    // ВСЕ МИКСИНЫ В ОДНОМ ФАЙЛЕ
+    // ==========================================
+    @Mixin(net.minecraft.client.render.GameRenderer.class)
+    public static class MixinGameRenderer {
+        @Inject(method = "getBasicProjectionMatrix", at = @At("RETURN"), cancellable = true)
+        private void onGetBasicProjectionMatrix(float fov, CallbackInfoReturnable<Matrix4f> cir) {
+            if (INSTANCE == null) return;
+            AspectRatioModule mod = (AspectRatioModule) INSTANCE.getModuleManager().getModule(AspectRatioModule.class);
+            if (mod != null && mod.isEnabled()) {
+                float customAspect = mod.getRatio();
+                Matrix4f matrix = new Matrix4f();
+                matrix.perspective((float) Math.toRadians(fov), customAspect, 0.05f, 1000.0f);
+                cir.setReturnValue(matrix);
+            }
         }
     }
 
-    @Inject(method = "renderFloatingItem", at = @At("HEAD"), cancellable = true)
-    private void injectBlockTotemAnimation(DrawContext context, RenderTickCounter tickCounter, CallbackInfo ci) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.NoRenderModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoRenderModule.class);
-        if (module != null && module.isEnabled() && module.totemAnimation.get()) {
-            ci.cancel();
-        }
-    }
-}
-
-@Mixin(InGameOverlayRenderer.class)
-class MixinInGameOverlayRenderer {
-    @Inject(method = "renderFireOverlay", at = @At("HEAD"), cancellable = true)
-    private static void injectLowFire(MatrixStack matrices, VertexConsumerProvider vertexConsumers, CallbackInfo ci) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.LowFireModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.LowFireModule.class);
-        if (module != null && module.isEnabled()) {
-            double h = module.height.get();
-            if (h <= 0.01) {
+    @Mixin(net.minecraft.client.gui.hud.InGameHud.class)
+    public static class MixinInGameHud {
+        @Inject(method = "renderCrosshair", at = @At("HEAD"), cancellable = true)
+        private void onRenderCrosshair(DrawContext context, net.minecraft.client.render.RenderTickCounter tickCounter, CallbackInfo ci) {
+            if (INSTANCE == null) return;
+            CrosshairModule cross = (CrosshairModule) INSTANCE.getModuleManager().getModule(CrosshairModule.class);
+            if (cross != null && cross.isEnabled()) {
                 ci.cancel();
-            } else {
-                float offsetY = (float) -(1.0 - h) * 0.45f;
-                matrices.translate(0.0f, offsetY, 0.0f);
             }
         }
     }
-}
 
-@Mixin(HeldItemRenderer.class)
-class MixinHeldItemRenderer {
-    @Inject(method = "renderFirstPersonItem", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/util/math/MatrixStack;push()V", shift = At.Shift.AFTER))
-    private void injectLowShield(AbstractClientPlayerEntity player, float tickDelta, float pitch, Hand hand, float swingProgress, ItemStack item, float equipProgress, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
-        if (hand == Hand.OFF_HAND && item.getItem() instanceof ShieldItem) {
-            if (VisualModClient.INSTANCE == null) return;
-            VisualModClient.LowShieldModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.LowShieldModule.class);
-            if (module != null && module.isEnabled()) {
-                float shiftY = (float) -module.offsetY.get();
-                float sc = (float) module.scale.get();
-                matrices.translate(0.0f, shiftY, 0.0f);
-                matrices.scale(sc, sc, sc);
+    @Mixin(net.minecraft.client.render.entity.PlayerEntityRenderer.class)
+    public static class MixinPlayerEntityRenderer {
+        @Inject(method = "render(Lnet/minecraft/client/network/AbstractClientPlayerEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V", at = @At("TAIL"))
+        private void onRenderPlayer(AbstractClientPlayerEntity player, float yaw, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
+            if (INSTANCE == null) return;
+            CosmeticsModule cosm = (CosmeticsModule) INSTANCE.getModuleManager().getModule(CosmeticsModule.class);
+            if (cosm != null && cosm.isEnabled()) {
+                cosm.renderPlayerCosmetics(player, matrices, vertexConsumers, tickDelta);
             }
         }
     }
-}
 
-@Mixin(ParticleManager.class)
-class MixinParticleManager {
-    @Inject(method = "addParticle(Lnet/minecraft/particle/ParticleEffect;DDDDDD)Lnet/minecraft/client/particle/Particle;", at = @At("HEAD"), cancellable = true)
-    private void injectFilterExplosionParticles(ParticleEffect parameters, double x, double y, double z, double vx, double vy, double vz, CallbackInfoReturnable<Particle> cir) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.NoRenderModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.NoRenderModule.class);
-        if (module != null && module.isEnabled() && module.explosions.get()) {
-            if (parameters.getType() == ParticleTypes.EXPLOSION || parameters.getType() == ParticleTypes.EXPLOSION_EMITTER) {
-                cir.setReturnValue(null);
-            }
-        }
-    }
-}
-
-@Mixin(Entity.class)
-class MixinEntity {
-    @Inject(method = "getTargetingMargin", at = @At("RETURN"), cancellable = true)
-    private void injectHitboxMargin(CallbackInfoReturnable<Float> cir) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.HitBoxesModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.HitBoxesModule.class);
-        if (module != null && module.isEnabled()) {
-            cir.setReturnValue(cir.getReturnValue() + module.getExpansion());
-        }
-    }
-}
-
-@Mixin(ClientPlayerEntity.class)
-class MixinClientPlayerEntity {
-    @Inject(method = "setVelocityClient", at = @At("HEAD"), cancellable = true)
-    private void injectVelocity(double x, double y, double z, CallbackInfo ci) {
-        if (VisualModClient.INSTANCE == null) return;
-        VisualModClient.VelocityModule module = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.VelocityModule.class);
-        if (module != null && module.isEnabled()) {
-            ClientPlayerEntity player = (ClientPlayerEntity) (Object) this;
-            double horiz = module.horizontal.get();
-            double vert = module.vertical.get();
-
-            if (horiz == 0.0 && vert == 0.0) {
+    @Mixin(TitleScreen.class)
+    public static class MixinTitleScreen {
+        @Inject(method = "init", at = @At("HEAD"), cancellable = true)
+        private void onInit(CallbackInfo ci) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc != null) {
+                mc.setScreen(new CustomTitleScreen());
                 ci.cancel();
-            } else {
-                player.setVelocity(x * horiz, y * vert, z * horiz);
-                ci.cancel();
-            }
-        }
-    }
-}
-
-@Mixin(PlayerEntityRenderer.class)
-class MixinPlayerEntityRenderer {
-    @Inject(method = "render", at = @At("RETURN"))
-    private void injectCosmeticsAndChinaHat(AbstractClientPlayerEntity entity, float yaw, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
-        VisualModClient.CosmeticsRenderer.renderCosmetics(entity, tickDelta, matrices, vertexConsumers, light);
-
-        if (VisualModClient.INSTANCE != null) {
-            VisualModClient.ChinaHatModule hatMod = VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.ChinaHatModule.class);
-            if (hatMod != null && hatMod.isEnabled()) {
-                VisualModClient.CosmeticsRenderer.renderStandaloneChinaHat(entity, tickDelta, matrices, vertexConsumers, hatMod);
             }
         }
     }
