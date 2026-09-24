@@ -16,7 +16,6 @@ import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.OtherClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.GameRenderer;
-import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
@@ -572,93 +571,6 @@ public class VisualModClient implements ClientModInitializer {
             registerSetting(headAccessory);
             registerSetting(backKatana);
             setEnabled(true);
-        }
-
-        public void renderCosmeticsFromState(MatrixStack matrices, VertexConsumerProvider vertexConsumers) {
-            if (!isEnabled()) return;
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player == null) return;
-
-            long time = System.currentTimeMillis();
-            float flap = MathHelper.sin((time % 2000) / 2000.0f * (float) Math.PI * 2.0f) * 0.45f;
-            if (mc.player.forwardSpeed != 0 || mc.player.sidewaysSpeed != 0) flap *= 1.8f;
-
-            matrices.push();
-
-            if (enableWings.get()) {
-                matrices.push();
-                matrices.translate(0.0, 0.35, 0.14);
-                float sc = wingScale.get().floatValue();
-                matrices.scale(sc, sc, sc);
-
-                int wingColor = switch (wingStyle.get()) {
-                    case "Dragon" -> 0xFF881111;
-                    case "Demon" -> 0xFF330044;
-                    case "Cyber" -> 0xFF00E5FF;
-                    default -> 0xFFE0E7FF;
-                };
-
-                matrices.push();
-                matrices.multiply(RotationAxis.POSITIVE_Y.rotation(0.35f + flap));
-                drawQuad3D(matrices, 0.0f, 0.0f, 0.9f, 0.65f, wingColor);
-                matrices.pop();
-
-                matrices.push();
-                matrices.multiply(RotationAxis.POSITIVE_Y.rotation(-0.35f - flap));
-                drawQuad3D(matrices, -0.9f, 0.0f, 0.0f, 0.65f, wingColor);
-                matrices.pop();
-
-                matrices.pop();
-            }
-
-            if (enableCape.get()) {
-                matrices.push();
-                matrices.translate(0.0, 0.0, 0.15);
-                float speedTilt = (mc.player.forwardSpeed != 0 || mc.player.sidewaysSpeed != 0) ? 0.45f : 0.08f;
-                matrices.multiply(RotationAxis.POSITIVE_X.rotation(speedTilt + MathHelper.sin(time / 250.0f) * 0.05f));
-
-                int capeColor = switch (capeStyle.get()) {
-                    case "Cosmo" -> 0xFF1E1035;
-                    case "Fire" -> 0xFF8A1800;
-                    case "Wave" -> 0xFF0B4F6C;
-                    default -> 0xFF4F46E5;
-                };
-
-                drawQuad3D(matrices, -0.28f, -0.9f, 0.28f, 0.05f, capeColor);
-                matrices.pop();
-            }
-
-            String head = headAccessory.get();
-            if (!head.equals("None")) {
-                matrices.push();
-                matrices.translate(0.0, mc.player.getEyeHeight(mc.player.getPose()) + 0.35, 0.0);
-
-                if (head.equals("Halo")) {
-                    matrices.multiply(RotationAxis.POSITIVE_Y.rotation(time / 600.0f));
-                    matrices.multiply(RotationAxis.POSITIVE_X.rotation(0.2f));
-                    drawQuad3D(matrices, -0.3f, -0.02f, 0.3f, 0.02f, 0xFFFFD700);
-                } else if (head.equals("ChinaHat")) {
-                    matrices.scale(0.85f, 0.35f, 0.85f);
-                    drawQuad3D(matrices, -0.5f, 0.0f, 0.5f, 0.05f, 0xFF4F46E5);
-                } else if (head.equals("Horns")) {
-                    drawQuad3D(matrices, -0.25f, 0.0f, -0.15f, 0.3f, 0xFF990022);
-                    drawQuad3D(matrices, 0.15f, 0.0f, 0.25f, 0.3f, 0xFF990022);
-                } else if (head.equals("Crown")) {
-                    drawQuad3D(matrices, -0.3f, 0.0f, 0.3f, 0.15f, 0xFFFFCC00);
-                }
-                matrices.pop();
-            }
-
-            if (backKatana.get()) {
-                matrices.push();
-                matrices.translate(0.05, 0.2, 0.18);
-                matrices.multiply(RotationAxis.POSITIVE_Z.rotation(0.75f));
-                drawQuad3D(matrices, -0.03f, -0.6f, 0.03f, 0.5f, 0xFF222228);
-                drawQuad3D(matrices, -0.02f, 0.5f, 0.02f, 0.7f, 0xFFCCCCCC);
-                matrices.pop();
-            }
-
-            matrices.pop();
         }
 
         private void drawQuad3D(MatrixStack matrices, float x0, float y0, float x1, float y1, int color) {
@@ -2091,16 +2003,12 @@ public class VisualModClient implements ClientModInitializer {
             updateAndDrawCursorParticles(context, mouseX, mouseY, delta);
             updateAndDrawClickSparks(context, delta);
 
-            context.getMatrices().push();
-            context.getMatrices().translate(0.0f, offsetY, 0.0f);
+            drawGreetingHeader(context, physW, offsetY);
+            drawMainButtons(context, mouseX, mouseY, offsetY, delta);
+            drawPresetButtons(context, mouseX, mouseY, offsetY, delta);
+            drawSystemInfoWidget(context, physW, physH, offsetY);
+            drawDisclaimer(context, physH, offsetY);
 
-            drawGreetingHeader(context, physW);
-            drawMainButtons(context, mouseX, mouseY - offsetY, delta);
-            drawPresetButtons(context, mouseX, mouseY - offsetY, delta);
-            drawSystemInfoWidget(context, physW, physH);
-            drawDisclaimer(context, physH);
-
-            context.getMatrices().pop();
             super.render(context, mouseX, mouseY, deltaTick);
         }
 
@@ -2166,76 +2074,78 @@ public class VisualModClient implements ClientModInitializer {
             }
         }
 
-        private void drawGreetingHeader(DrawContext context, int physW) {
+        private void drawGreetingHeader(DrawContext context, int physW, float offsetY) {
             MinecraftClient mc = MinecraftClient.getInstance();
             String username = mc.getSession() != null ? mc.getSession().getUsername() : "Player";
             String welcomeText = getGreeting() + ", " + username + "!";
 
             int w = mc.textRenderer.getWidth(welcomeText);
-            drawTextSafe(context, mc.textRenderer, welcomeText, (physW - w) / 2, 70, 0xFFE0D8F5, true);
+            drawTextSafe(context, mc.textRenderer, welcomeText, (physW - w) / 2, (int) (70 + offsetY), 0xFFE0D8F5, true);
 
             String title = "DELTA CLIENT";
             int tw = mc.textRenderer.getWidth(title);
-            drawTextSafe(context, mc.textRenderer, "§b§l" + title, (physW - tw) / 2, 52, 0xFF00E5FF, true);
+            drawTextSafe(context, mc.textRenderer, "§b§l" + title, (physW - tw) / 2, (int) (52 + offsetY), 0xFF00E5FF, true);
         }
 
-        private void drawMainButtons(DrawContext context, double mx, double my, float delta) {
+        private void drawMainButtons(DrawContext context, double mx, double my, float offsetY, float delta) {
             MinecraftClient mc = MinecraftClient.getInstance();
 
             for (MenuButton btn : this.mainButtons) {
-                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+                float renderY = btn.y + offsetY;
+                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= renderY && my <= renderY + btn.h;
                 float k = getHoverAnim(btn.label, hovered, delta);
 
                 int bgColor = lerpColor(COLOR_BTN_IDLE, COLOR_BTN_HOVER, k);
                 int strokeColor = lerpColor(COLOR_BTN_STROKE_IDLE, COLOR_BTN_STROKE_HOV, k);
 
-                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) btn.y, (int) btn.w, (int) btn.h, bgColor, strokeColor);
+                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) renderY, (int) btn.w, (int) btn.h, bgColor, strokeColor);
 
                 if (k > 0.01f) {
                     int glowAlpha = ((int) (k * 255.0f) << 24) | (COLOR_PURPLE_ACCENT & 0x00FFFFFF);
-                    context.fill((int) btn.x + 4, (int) btn.y + 1, (int) (btn.x + btn.w - 4), (int) btn.y + 3, glowAlpha);
+                    context.fill((int) btn.x + 4, (int) renderY + 1, (int) (btn.x + btn.w - 4), (int) renderY + 3, glowAlpha);
                 }
 
                 int textColor = lerpColor(0xFFD8D2F0, 0xFFFFFFFF, k);
                 int textW = mc.textRenderer.getWidth(btn.label);
-                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - textW) / 2.0f), (int) (btn.y + (btn.h - 8) / 2.0f), textColor, false);
+                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - textW) / 2.0f), (int) (renderY + (btn.h - 8) / 2.0f), textColor, false);
             }
         }
 
-        private void drawPresetButtons(DrawContext context, double mx, double my, float delta) {
+        private void drawPresetButtons(DrawContext context, double mx, double my, float offsetY, float delta) {
             MinecraftClient mc = MinecraftClient.getInstance();
 
             for (GraphicPresetButton btn : this.presetButtons) {
+                float renderY = btn.y + offsetY;
                 boolean isSelected = btn.label.equalsIgnoreCase(currentMenuPreset);
-                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= btn.y && my <= btn.y + btn.h;
+                boolean hovered = mx >= btn.x && mx <= btn.x + btn.w && my >= renderY && my <= renderY + btn.h;
                 float k = getHoverAnim("preset_" + btn.label, hovered || isSelected, delta);
 
                 int btnBg = isSelected ? 0x887B2CBF : lerpColor(0x331C103B, 0x665A189A, k);
                 int btnBorder = isSelected ? COLOR_PURPLE_ACCENT : lerpColor(0x44B14EFF, 0xAA7B2CBF, k);
 
-                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) btn.y, (int) btn.w, (int) btn.h, btnBg, btnBorder);
+                ModernRefinedClickGui.drawSmoothRect(context, (int) btn.x, (int) renderY, (int) btn.w, (int) btn.h, btnBg, btnBorder);
 
                 int textColor = isSelected ? 0xFFFFFFFF : lerpColor(0xFFA09AB8, 0xFFFFFFFF, k);
                 int tw = mc.textRenderer.getWidth(btn.label);
-                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - tw) / 2.0f), (int) (btn.y + (btn.h - 8) / 2.0f), textColor, false);
+                drawTextSafe(context, mc.textRenderer, btn.label, (int) (btn.x + (btn.w - tw) / 2.0f), (int) (renderY + (btn.h - 8) / 2.0f), textColor, false);
             }
         }
 
-        private void drawSystemInfoWidget(DrawContext context, int physW, int physH) {
+        private void drawSystemInfoWidget(DrawContext context, int physW, int physH, float offsetY) {
             MinecraftClient mc = MinecraftClient.getInstance();
             int fps = mc.getCurrentFps();
             String infoStr = "Delta Visuals 1.0.0 | FPS: " + fps + " | Fabric 1.21.11";
 
             int strW = mc.textRenderer.getWidth(infoStr);
             float x = physW - strW - 20.0f;
-            float y = physH - 26.0f;
+            float y = physH - 26.0f + offsetY;
             drawTextSafe(context, mc.textRenderer, infoStr, (int) x, (int) y, 0x77A09AB8, false);
         }
 
-        private void drawDisclaimer(DrawContext context, int physH) {
+        private void drawDisclaimer(DrawContext context, int physH, float offsetY) {
             MinecraftClient mc = MinecraftClient.getInstance();
             float disclaimerX = 20.0f;
-            float disclaimerY = physH - 62.0f;
+            float disclaimerY = physH - 62.0f + offsetY;
             int disclaimerColor = 0x77A09AB8;
 
             drawTextSafe(context, mc.textRenderer, "Delta Client is not affiliated with Mojang or Microsoft Corporation.", (int) disclaimerX, (int) disclaimerY, disclaimerColor, false);
@@ -2252,7 +2162,8 @@ public class VisualModClient implements ClientModInitializer {
             spawnClickSparks((float) mx, (float) my);
 
             for (MenuButton btn : this.mainButtons) {
-                if (mx >= btn.x && mx <= btn.x + btn.w && (my - offsetY) >= btn.y && (my - offsetY) <= btn.y + btn.h) {
+                float renderY = btn.y + offsetY;
+                if (mx >= btn.x && mx <= btn.x + btn.w && my >= renderY && my <= renderY + btn.h) {
                     if (btn.action != null) {
                         btn.action.run();
                         ModernRefinedClickGui.playClickSound();
@@ -2262,7 +2173,8 @@ public class VisualModClient implements ClientModInitializer {
             }
 
             for (GraphicPresetButton btn : this.presetButtons) {
-                if (mx >= btn.x && mx <= btn.x + btn.w && (my - offsetY) >= btn.y && (my - offsetY) <= btn.y + btn.h) {
+                float renderY = btn.y + offsetY;
+                if (mx >= btn.x && mx <= btn.x + btn.w && my >= renderY && my <= renderY + btn.h) {
                     if (btn.action != null) {
                         btn.action.run();
                         ModernRefinedClickGui.playClickSound();
@@ -2348,8 +2260,7 @@ public class VisualModClient implements ClientModInitializer {
             float x, y, size, speed, alpha;
 
             public BackgroundStar(float x, float y, float size, float speed, float alpha) {
-                this.x = x; this.y = y; this.size = size;
-                this.speed = speed; this.alpha = alpha;
+                this.x = x; this.y = y; this.size = size; this.speed = speed; this.alpha = alpha;
             }
 
             public void update(float delta, int physW, int physH) {
