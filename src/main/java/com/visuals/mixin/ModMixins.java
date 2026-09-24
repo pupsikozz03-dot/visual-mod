@@ -4,8 +4,10 @@ import com.visuals.client.VisualModClient;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.TitleScreen;
-import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.render.entity.LivingEntityRenderer;
+import net.minecraft.client.render.entity.state.LivingEntityRenderState;
+import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
 import net.minecraft.client.util.math.MatrixStack;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
@@ -43,14 +45,16 @@ public class ModMixins {
         }
     }
 
-    @Mixin(net.minecraft.client.render.entity.PlayerEntityRenderer.class)
-    public static class MixinPlayerEntityRenderer {
-        @Inject(method = "render(Lnet/minecraft/client/network/AbstractClientPlayerEntity;FFLnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V", at = @At("TAIL"))
-        private void onRenderPlayer(AbstractClientPlayerEntity player, float yaw, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
+    @Mixin(LivingEntityRenderer.class)
+    public static class MixinLivingEntityRenderer {
+        @Inject(method = "render(Lnet/minecraft/client/render/entity/state/LivingEntityRenderState;Lnet/minecraft/client/util/math/MatrixStack;Lnet/minecraft/client/render/VertexConsumerProvider;I)V", at = @At("TAIL"))
+        private void onRenderLiving(LivingEntityRenderState state, MatrixStack matrices, VertexConsumerProvider vertexConsumers, int light, CallbackInfo ci) {
             if (VisualModClient.INSTANCE == null) return;
-            VisualModClient.CosmeticsModule cosm = (VisualModClient.CosmeticsModule) VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.CosmeticsModule.class);
-            if (cosm != null && cosm.isEnabled()) {
-                cosm.renderPlayerCosmetics(player, matrices, vertexConsumers, tickDelta);
+            if (state instanceof PlayerEntityRenderState) {
+                VisualModClient.CosmeticsModule cosm = (VisualModClient.CosmeticsModule) VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.CosmeticsModule.class);
+                if (cosm != null && cosm.isEnabled()) {
+                    cosm.renderCosmeticsFromState(matrices, vertexConsumers);
+                }
             }
         }
     }
