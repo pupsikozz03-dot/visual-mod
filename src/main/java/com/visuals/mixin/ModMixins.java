@@ -16,8 +16,9 @@ public class ModMixins {
 
     @Mixin(net.minecraft.client.render.GameRenderer.class)
     public static class MixinGameRenderer {
+        // В 1.21.x аргумент FOV имеет тип double!
         @Inject(method = "getBasicProjectionMatrix", at = @At("RETURN"), cancellable = true)
-        private void onGetBasicProjectionMatrix(float fov, CallbackInfoReturnable<Matrix4f> cir) {
+        private void onGetBasicProjectionMatrix(double fov, CallbackInfoReturnable<Matrix4f> cir) {
             if (VisualModClient.INSTANCE == null) return;
             VisualModClient.AspectRatioModule mod = (VisualModClient.AspectRatioModule) VisualModClient.INSTANCE.getModuleManager().getModule(VisualModClient.AspectRatioModule.class);
             if (mod != null && mod.isEnabled()) {
