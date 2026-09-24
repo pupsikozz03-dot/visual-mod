@@ -2019,22 +2019,33 @@ public class VisualModClient implements ClientModInitializer {
 
                 boolean rendered = false;
                 for (Method m : DrawContext.class.getMethods()) {
-                    if (m.getName().equals("drawTexture") && m.getParameterCount() == 10) {
+                    if (m.getName().equals("drawTexture")) {
                         Class<?>[] pts = m.getParameterTypes();
-                        if (pts[0] == Identifier.class && pts[1] == int.class && pts[2] == int.class) {
+                        // Вариант 1: drawTexture(Identifier, int, int, float, float, int, int, int, int)
+                        if (pts.length >= 9 && pts[0] == Identifier.class && pts[1] == int.class) {
                             m.invoke(context, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
+                            rendered = true;
+                            break;
+                        }
+                        // Вариант 2: drawTexture(Function, Identifier, int, int, float, float, int, int, int, int)
+                        if (pts.length >= 10 && pts[1] == Identifier.class && pts[2] == int.class) {
+                            Object renderLayer = net.minecraft.client.render.RenderLayer.getGuiTextured(CLOUD_BG);
+                            java.util.function.Function<Identifier, Object> func = id -> renderLayer;
+                            m.invoke(context, func, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
                             rendered = true;
                             break;
                         }
                     }
                 }
+
                 if (!rendered) {
-                    context.drawTexture(java.util.function.Function.identity() != null ? net.minecraft.client.render.RenderLayer::getGuiTextured : null, CLOUD_BG, 0, 0, 0.0f, 0.0f, w, h, w, h);
+                    context.fill(0, 0, w, h, 0xFF140F2D);
                 }
             } catch (Throwable t) {
                 context.fill(0, 0, w, h, 0xFF140F2D);
             }
         }
+    }
 
         private void drawTransparentPurpleGrid(DrawContext context, int physW, int physH, float mx, float my) {
             float moveX = (mx - physW / 2.0f) * 0.012f;
