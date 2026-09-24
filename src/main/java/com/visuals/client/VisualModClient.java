@@ -4,6 +4,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -12,7 +13,9 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
+import net.minecraft.client.network.OtherClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
@@ -29,11 +32,13 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
+import org.joml.Matrix4f;
 import org.lwjgl.glfw.GLFW;
 
 import java.lang.reflect.Constructor;
@@ -70,6 +75,7 @@ public class VisualModClient implements ClientModInitializer {
         cosmeticsGuiKey = registerKeyBindingSafely("key.visuals.cosmetics", GLFW.GLFW_KEY_RIGHT_SHIFT, "category.visuals");
         moduleManager.init();
 
+        // Отрисовка кастомного прицела и TargetHUD
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc == null || mc.player == null || mc.options.hudHidden) return;
@@ -82,6 +88,56 @@ public class VisualModClient implements ClientModInitializer {
             TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
             if (th != null && th.isEnabled()) {
                 th.render(drawContext, mc);
+            }
+        });
+
+        // Прямая 3D отрисовка косметики и ChinaHat в мире без обязательного миксина
+        WorldRenderEvents.LAST.register(context -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.world == null || mc.player == null) return;
+
+            CosmeticsModule cosMod = moduleManager.getModule(CosmeticsModule.class);
+            ChinaHatModule hatMod = moduleManager.getModule(ChinaHatModule.class);
+
+            boolean hasCosmetics = cosMod != null && cosMod.isEnabled();
+            boolean hasHat = hatMod != null && hatMod.isEnabled();
+            if (!hasCosmetics && !hasHat) return;
+
+            MatrixStack matrices = context.matrixStack();
+            VertexConsumerProvider consumers = context.consumers();
+            if (matrices == null || consumers == null) return;
+
+            Camera camera = context.camera();
+            Vec3d camPos = camera.getPos();
+            float tickDelta = 1.0f;
+            try {
+                tickDelta = context.tickCounter().getTickDelta(true);
+            } catch (Throwable ignored) {}
+
+            for (AbstractClientPlayerEntity player : mc.world.getPlayers()) {
+                if (!player.isAlive()) continue;
+                if (player == mc.player && mc.options.getPerspective().isFirstPerson() && !(mc.currentScreen instanceof CosmeticsScreen)) {
+                    continue;
+                }
+
+                double px = MathHelper.lerp((double) tickDelta, player.lastRenderX, player.getX()) - camPos.x;
+                double py = MathHelper.lerp((double) tickDelta, player.lastRenderY, player.getY()) - camPos.y;
+                double pz = MathHelper.lerp((double) tickDelta, player.lastRenderZ, player.getZ()) - camPos.z;
+
+                matrices.push();
+                matrices.translate(px, py, pz);
+
+                float bodyYaw = MathHelper.lerpAngleDegrees(tickDelta, player.prevBodyYaw, player.bodyYaw);
+                matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180.0f - bodyYaw));
+
+                if (hasCosmetics) {
+                    CosmeticsRenderer.renderCosmetics(player, tickDelta, matrices, consumers, 0xF000F0);
+                }
+                if (hasHat) {
+                    CosmeticsRenderer.renderStandaloneChinaHat(player, tickDelta, matrices, consumers, hatMod);
+                }
+
+                matrices.pop();
             }
         });
 
@@ -457,7 +513,7 @@ public class VisualModClient implements ClientModInitializer {
 
             Vec3d cameraPos = client.player.getCameraPosVec(1.0f);
             Vec3d rot = client.player.getRotationVec(1.0f);
-            double reachDist = 3.6 + expand;
+            double reachDist = 3.8 + (expand > 0 ? expand + 0.5 : 0.0);
             Vec3d reach = cameraPos.add(rot.multiply(reachDist));
 
             Entity bestEntity = null;
@@ -537,6 +593,8 @@ public class VisualModClient implements ClientModInitializer {
                         if (target instanceof LivingEntity living) {
                             currentCombatTarget = living;
                         }
+                    } else if (client.crosshairTarget instanceof BlockHitResult bHit && bHit.getType() == HitResult.Type.BLOCK) {
+                        client.interactionManager.attackBlock(bHit.getBlockPos(), bHit.getSide());
                     }
                     client.player.swingHand(Hand.MAIN_HAND);
                 }
@@ -743,12 +801,9 @@ public class VisualModClient implements ClientModInitializer {
             CosmeticsModule module = VisualModClient.INSTANCE.getModuleManager().getModule(CosmeticsModule.class);
             if (module == null || !module.isEnabled()) return;
 
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (entity == mc.player && mc.options.getPerspective().isFirstPerson() && !(mc.currentScreen instanceof CosmeticsScreen)) return;
-
             float age = entity.age + tickDelta;
             VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
-            MatrixStack.Entry entry = matrices.peek();
+            Matrix4f posMat = matrices.peek().getPositionMatrix();
 
             String head = module.headItem.get();
             if (!head.equals("Off")) {
@@ -762,6 +817,7 @@ public class VisualModClient implements ClientModInitializer {
 
                     float rad = 0.32f;
                     int segs = 20;
+                    Matrix4f hMat = matrices.peek().getPositionMatrix();
                     for (int i = 0; i < segs; i++) {
                         double a1 = (i * Math.PI * 2) / segs;
                         double a2 = ((i + 1) * Math.PI * 2) / segs;
@@ -770,36 +826,23 @@ public class VisualModClient implements ClientModInitializer {
                         float x2 = (float) (Math.cos(a2) * rad);
                         float z2 = (float) (Math.sin(a2) * rad);
 
-                        buffer.vertex(entry, x1, 0.0f, z1).color(255, 215, 0, 220);
-                        buffer.vertex(entry, x2, 0.0f, z2).color(255, 215, 0, 220);
-                        buffer.vertex(entry, x2 * 0.88f, 0.02f, z2 * 0.88f).color(255, 245, 140, 240);
-                        buffer.vertex(entry, x1 * 0.88f, 0.02f, z1 * 0.88f).color(255, 245, 140, 240);
+                        buffer.vertex(hMat, x1, 0.0f, z1).color(255, 215, 0, 220);
+                        buffer.vertex(hMat, x2, 0.0f, z2).color(255, 215, 0, 220);
+                        buffer.vertex(hMat, x2 * 0.88f, 0.02f, z2 * 0.88f).color(255, 245, 140, 240);
+                        buffer.vertex(hMat, x1 * 0.88f, 0.02f, z1 * 0.88f).color(255, 245, 140, 240);
                     }
                 } else if (head.equals("ChinaHat")) {
-                    float r = 0.65f;
-                    float h = 0.28f;
-                    int segs = 24;
-                    for (int i = 0; i < segs; i++) {
-                        double a1 = (i * Math.PI * 2) / segs;
-                        double a2 = ((i + 1) * Math.PI * 2) / segs;
-                        float x1 = (float) (Math.cos(a1) * r);
-                        float z1 = (float) (Math.sin(a1) * r);
-                        float x2 = (float) (Math.cos(a2) * r);
-                        float z2 = (float) (Math.sin(a2) * r);
-
-                        buffer.vertex(entry, 0.0f, h, 0.0f).color(129, 140, 248, 255);
-                        buffer.vertex(entry, x1, 0.0f, z1).color(99, 102, 241, 190);
-                        buffer.vertex(entry, x2, 0.0f, z2).color(99, 102, 241, 190);
-                        buffer.vertex(entry, 0.0f, h, 0.0f).color(129, 140, 248, 255);
-                    }
+                    renderConeHat(matrices, buffer, 0.65f, 0.28f, new int[]{129, 140, 248, 240});
                 } else if (head.equals("Horns")) {
                     matrices.translate(0.0, -0.05, 0.0);
-                    renderHorn(matrices, buffer, entry, 0.18f, 1);
-                    renderHorn(matrices, buffer, entry, -0.18f, -1);
+                    Matrix4f hornMat = matrices.peek().getPositionMatrix();
+                    renderHorn(hornMat, buffer, 0.18f, 1);
+                    renderHorn(hornMat, buffer, -0.18f, -1);
                 } else if (head.equals("Crown")) {
                     float r = 0.28f;
                     float h = 0.12f;
                     int segs = 6;
+                    Matrix4f cMat = matrices.peek().getPositionMatrix();
                     for (int i = 0; i < segs; i++) {
                         double a1 = (i * Math.PI * 2) / segs;
                         double a2 = ((i + 1) * Math.PI * 2) / segs;
@@ -810,10 +853,10 @@ public class VisualModClient implements ClientModInitializer {
                         float midX = (float) (Math.cos((a1 + a2) / 2) * r * 1.05);
                         float midZ = (float) (Math.sin((a1 + a2) / 2) * r * 1.05);
 
-                        buffer.vertex(entry, x1, 0.0f, z1).color(255, 215, 0, 255);
-                        buffer.vertex(entry, x2, 0.0f, z2).color(255, 215, 0, 255);
-                        buffer.vertex(entry, midX, h, midZ).color(255, 235, 59, 255);
-                        buffer.vertex(entry, x1, 0.0f, z1).color(255, 215, 0, 255);
+                        buffer.vertex(cMat, x1, 0.0f, z1).color(255, 215, 0, 255);
+                        buffer.vertex(cMat, x2, 0.0f, z2).color(255, 215, 0, 255);
+                        buffer.vertex(cMat, midX, h, midZ).color(255, 235, 59, 255);
+                        buffer.vertex(cMat, x1, 0.0f, z1).color(255, 215, 0, 255);
                     }
                 }
                 matrices.pop();
@@ -829,10 +872,10 @@ public class VisualModClient implements ClientModInitializer {
                 if (entity.isSprinting() || !entity.isOnGround()) flap *= 1.4f;
 
                 int[] col = switch (wingMode) {
-                    case "Dragon" -> new int[]{220, 38, 38, 120};
-                    case "Demon" -> new int[]{147, 51, 234, 180};
+                    case "Dragon" -> new int[]{220, 38, 38, 150};
+                    case "Demon" -> new int[]{147, 51, 234, 190};
                     case "Cyber" -> new int[]{6, 182, 212, 240};
-                    default -> new int[]{255, 255, 255, 210};
+                    default -> new int[]{255, 255, 255, 220};
                 };
 
                 renderWing(matrices, buffer, sc, flap, 1, col);
@@ -846,19 +889,20 @@ public class VisualModClient implements ClientModInitializer {
                 matrices.translate(0.08, entity.getHeight() * 0.58, 0.16);
                 matrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-45.0f));
                 matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(15.0f));
+                Matrix4f kMat = matrices.peek().getPositionMatrix();
 
                 float kw = 0.03f;
                 float kh = 0.95f;
-                buffer.vertex(entry, -kw, 0.0f, 0.0f).color(30, 27, 46, 255);
-                buffer.vertex(entry, kw, 0.0f, 0.0f).color(30, 27, 46, 255);
-                buffer.vertex(entry, kw, kh, 0.0f).color(199, 210, 254, 255);
-                buffer.vertex(entry, -kw, kh, 0.0f).color(199, 210, 254, 255);
+                buffer.vertex(kMat, -kw, 0.0f, 0.0f).color(30, 27, 46, 255);
+                buffer.vertex(kMat, kw, 0.0f, 0.0f).color(30, 27, 46, 255);
+                buffer.vertex(kMat, kw, kh, 0.0f).color(199, 210, 254, 255);
+                buffer.vertex(kMat, -kw, kh, 0.0f).color(199, 210, 254, 255);
 
                 float gw = 0.08f;
-                buffer.vertex(entry, -gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
-                buffer.vertex(entry, gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
-                buffer.vertex(entry, gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
-                buffer.vertex(entry, -gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
+                buffer.vertex(kMat, -gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
+                buffer.vertex(kMat, gw, kh * 0.68f, -0.02f).color(234, 179, 8, 255);
+                buffer.vertex(kMat, gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
+                buffer.vertex(kMat, -gw, kh * 0.72f, 0.02f).color(234, 179, 8, 255);
 
                 matrices.pop();
             }
@@ -871,6 +915,7 @@ public class VisualModClient implements ClientModInitializer {
                 float walkTilt = entity.isSprinting() ? 42.0f : (entity.forwardSpeed != 0.0f ? 20.0f : 8.0f);
                 float wave = (float) Math.sin(age * 0.15f) * 4.0f;
                 matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(walkTilt + wave));
+                Matrix4f cpMat = matrices.peek().getPositionMatrix();
 
                 int cTop = switch (capeMode) {
                     case "Fire" -> 0xFFEF4444;
@@ -886,12 +931,43 @@ public class VisualModClient implements ClientModInitializer {
                 int r1 = (cTop >> 16) & 0xFF, g1 = (cTop >> 8) & 0xFF, b1 = cTop & 0xFF;
                 int r2 = (cBottom >> 16) & 0xFF, g2 = (cBottom >> 8) & 0xFF, b2 = cBottom & 0xFF;
 
-                buffer.vertex(entry, -cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
-                buffer.vertex(entry, cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
-                buffer.vertex(entry, cw, -cl, 0.04f).color(r2, g2, b2, 230);
-                buffer.vertex(entry, -cw, -cl, 0.04f).color(r2, g2, b2, 230);
+                buffer.vertex(cpMat, -cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
+                buffer.vertex(cpMat, cw, 0.0f, 0.0f).color(r1, g1, b1, 230);
+                buffer.vertex(cpMat, cw, -cl, 0.04f).color(r2, g2, b2, 230);
+                buffer.vertex(cpMat, -cw, -cl, 0.04f).color(r2, g2, b2, 230);
 
                 matrices.pop();
+            }
+        }
+
+        public static void renderStandaloneChinaHat(AbstractClientPlayerEntity entity, float tickDelta, MatrixStack matrices, VertexConsumerProvider vertexConsumers, ChinaHatModule hatMod) {
+            VertexConsumer buffer = vertexConsumers.getBuffer(RenderLayer.getLightning());
+            matrices.push();
+            matrices.translate(0.0, entity.getHeight() + 0.12, 0.0);
+
+            float r = hatMod.radius.get().floatValue();
+            float h = hatMod.height.get().floatValue();
+            int[] c = hatMod.getRgba();
+
+            renderConeHat(matrices, buffer, r, h, c);
+            matrices.pop();
+        }
+
+        private static void renderConeHat(MatrixStack matrices, VertexConsumer buffer, float r, float h, int[] c) {
+            int segs = 28;
+            Matrix4f mat = matrices.peek().getPositionMatrix();
+            for (int i = 0; i < segs; i++) {
+                double a1 = (i * Math.PI * 2) / segs;
+                double a2 = ((i + 1) * Math.PI * 2) / segs;
+                float x1 = (float) (Math.cos(a1) * r);
+                float z1 = (float) (Math.sin(a1) * r);
+                float x2 = (float) (Math.cos(a2) * r);
+                float z2 = (float) (Math.sin(a2) * r);
+
+                buffer.vertex(mat, 0.0f, h, 0.0f).color(c[0], c[1], c[2], c[3]);
+                buffer.vertex(mat, x1, 0.0f, z1).color(c[0], c[1], c[2], Math.max(50, c[3] - 60));
+                buffer.vertex(mat, x2, 0.0f, z2).color(c[0], c[1], c[2], Math.max(50, c[3] - 60));
+                buffer.vertex(mat, 0.0f, h, 0.0f).color(c[0], c[1], c[2], c[3]);
             }
         }
 
@@ -900,27 +976,27 @@ public class VisualModClient implements ClientModInitializer {
             matrices.translate(side * 0.14f, 0.0, 0.0);
             matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(side * (45.0f + flap)));
             matrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(side * 15.0f));
-            MatrixStack.Entry entry = matrices.peek();
+            Matrix4f wMat = matrices.peek().getPositionMatrix();
 
             float w = 0.95f * sc;
             float h = 0.70f * sc;
 
-            buffer.vertex(entry, 0.0f, 0.0f, 0.0f).color(c[0], c[1], c[2], c[3]);
-            buffer.vertex(entry, side * w * 0.5f, h * 0.8f, 0.04f).color(c[0], c[1], c[2], c[3]);
-            buffer.vertex(entry, side * w, h * 0.4f, 0.0f).color(c[0], c[1], c[2], c[3] - 30);
-            buffer.vertex(entry, side * w * 0.4f, -h * 0.3f, -0.02f).color(c[0], c[1], c[2], c[3] - 20);
+            buffer.vertex(wMat, 0.0f, 0.0f, 0.0f).color(c[0], c[1], c[2], c[3]);
+            buffer.vertex(wMat, side * w * 0.5f, h * 0.8f, 0.04f).color(c[0], c[1], c[2], c[3]);
+            buffer.vertex(wMat, side * w, h * 0.4f, 0.0f).color(c[0], c[1], c[2], Math.max(0, c[3] - 30));
+            buffer.vertex(wMat, side * w * 0.4f, -h * 0.3f, -0.02f).color(c[0], c[1], c[2], Math.max(0, c[3] - 20));
 
             matrices.pop();
         }
 
-        private static void renderHorn(MatrixStack matrices, VertexConsumer buffer, MatrixStack.Entry entry, float sideX, int sign) {
+        private static void renderHorn(Matrix4f mat, VertexConsumer buffer, float sideX, int sign) {
             float hx = sideX;
             float hy = 0.0f;
             float hz = -0.1f;
-            buffer.vertex(entry, hx, hy, hz).color(220, 38, 38, 255);
-            buffer.vertex(entry, hx + sign * 0.08f, hy + 0.18f, hz + 0.06f).color(185, 28, 28, 255);
-            buffer.vertex(entry, hx + sign * 0.12f, hy + 0.28f, hz + 0.14f).color(239, 68, 68, 255);
-            buffer.vertex(entry, hx, hy, hz).color(220, 38, 38, 255);
+            buffer.vertex(mat, hx, hy, hz).color(220, 38, 38, 255);
+            buffer.vertex(mat, hx + sign * 0.08f, hy + 0.18f, hz + 0.06f).color(185, 28, 28, 255);
+            buffer.vertex(mat, hx + sign * 0.12f, hy + 0.28f, hz + 0.14f).color(239, 68, 68, 255);
+            buffer.vertex(mat, hx, hy, hz).color(220, 38, 38, 255);
         }
     }
 
@@ -979,7 +1055,9 @@ public class VisualModClient implements ClientModInitializer {
                 default -> customTime.get().longValue();
             };
 
-            safeSetWorldTime(client.world, targetTime);
+            try {
+                client.world.setTimeOfDay(targetTime);
+            } catch (Throwable ignored) {}
 
             if (clearWeather.get()) {
                 try {
@@ -988,33 +1066,10 @@ public class VisualModClient implements ClientModInitializer {
                 } catch (Throwable ignored) {}
             }
         }
-
-        private void safeSetWorldTime(Object world, long time) {
-            try {
-                for (Method m : world.getClass().getMethods()) {
-                    if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == long.class && m.getName().toLowerCase().contains("time")) {
-                        m.setAccessible(true);
-                        m.invoke(world, time);
-                        return;
-                    }
-                }
-                Method getProps = world.getClass().getMethod("getLevelProperties");
-                Object props = getProps.invoke(world);
-                if (props != null) {
-                    for (Method pm : props.getClass().getMethods()) {
-                        if (pm.getParameterCount() == 1 && pm.getParameterTypes()[0] == long.class && pm.getName().toLowerCase().contains("time")) {
-                            pm.setAccessible(true);
-                            pm.invoke(props, time);
-                            return;
-                        }
-                    }
-                }
-            } catch (Throwable ignored) {}
-        }
     }
 
     public static class ChinaHatModule extends Module {
-        public final ModeSetting colorMode = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Cyan", "Red", "Gold"));
+        public final ModeSetting colorMode = new ModeSetting("Цвет", "Indigo", List.of("Indigo", "Cyan", "Red", "Gold", "Pink"));
         public final SliderSetting radius = new SliderSetting("Радиус", 0.65, 0.3, 1.2, 0.05, "m");
         public final SliderSetting height = new SliderSetting("Высота", 0.28, 0.1, 0.6, 0.02, "m");
 
@@ -1023,6 +1078,16 @@ public class VisualModClient implements ClientModInitializer {
             registerSetting(colorMode);
             registerSetting(radius);
             registerSetting(height);
+        }
+
+        public int[] getRgba() {
+            return switch (colorMode.get()) {
+                case "Cyan" -> new int[]{6, 182, 212, 230};
+                case "Red" -> new int[]{239, 68, 68, 230};
+                case "Gold" -> new int[]{234, 179, 8, 230};
+                case "Pink" -> new int[]{236, 72, 153, 230};
+                default -> new int[]{129, 140, 248, 240};
+            };
         }
     }
 
@@ -1034,7 +1099,7 @@ public class VisualModClient implements ClientModInitializer {
         public final BooleanSetting dotInCenter = new BooleanSetting("Точка в центре", false);
 
         public CrosshairModule() {
-            super("Crosshair", "Кастомный статический прицел вместо ванильного", Category.RENDER);
+            super("Crosshair", "Кастомный статический прицел (скрывает ванильный)", Category.RENDER);
             registerSetting(style);
             registerSetting(size);
             registerSetting(gap);
@@ -1051,7 +1116,7 @@ public class VisualModClient implements ClientModInitializer {
             int halfT = t / 2;
 
             int color = 0xFFFFFFFF;
-            int border = 0xAA000000;
+            int border = 0xDD000000;
 
             String st = style.get();
             if (st.equals("Dot")) {
@@ -1060,6 +1125,15 @@ public class VisualModClient implements ClientModInitializer {
                 return;
             }
 
+            // Обводка
+            context.fill(cx - halfT - 1, cy - g - s - 1, cx - halfT + t + 1, cy - g + 1, border);
+            context.fill(cx - halfT - 1, cy + g - 1, cx - halfT + t + 1, cy + g + s + 1, border);
+            context.fill(cx - g - s - 1, cy - halfT - 1, cx - g + 1, cy - halfT + t + 1, border);
+            if (!st.equals("T-Cross")) {
+                context.fill(cx + g - 1, cy - halfT - 1, cx + g + s + 1, cy - halfT + t + 1, border);
+            }
+
+            // Заливка
             context.fill(cx - halfT, cy - g - s, cx - halfT + t, cy - g, color);
             context.fill(cx - halfT, cy + g, cx - halfT + t, cy + g + s, color);
             context.fill(cx - g - s, cy - halfT, cx - g, cy - halfT + t, color);
@@ -1068,7 +1142,7 @@ public class VisualModClient implements ClientModInitializer {
             }
 
             if (dotInCenter.get()) {
-                context.fill(cx - 1, cy - 1, cx + 1, cy + 1, 0xFF00FFCC);
+                context.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFF6366F1);
             }
         }
     }
@@ -1076,6 +1150,7 @@ public class VisualModClient implements ClientModInitializer {
     public static class ZoomModule extends Module {
         public final SliderSetting zoomFactor = new SliderSetting("Кратность", 3.5, 1.5, 8.0, 0.5, "x");
         private static double currentZoom = 1.0;
+        private Integer baseFov = null;
 
         public ZoomModule() {
             super("Zoom", "Кинематографическое приближение взгляда без искажений", Category.RENDER);
@@ -1088,10 +1163,30 @@ public class VisualModClient implements ClientModInitializer {
         public void onTick(MinecraftClient client) {
             double target = isEnabled() ? zoomFactor.get() : 1.0;
             currentZoom = MathHelper.lerp(0.25, currentZoom, target);
+
+            if (client.options != null) {
+                if (isEnabled()) {
+                    if (baseFov == null) {
+                        baseFov = client.options.getFov().getValue();
+                    }
+                    int targetFov = (int) Math.max(12, baseFov / zoomFactor.get());
+                    client.options.getFov().setValue(targetFov);
+                } else if (baseFov != null) {
+                    client.options.getFov().setValue(baseFov);
+                    baseFov = null;
+                }
+            }
         }
 
         @Override
-        public void onDisable() { currentZoom = 1.0; }
+        public void onDisable() {
+            currentZoom = 1.0;
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc != null && mc.options != null && baseFov != null) {
+                mc.options.getFov().setValue(baseFov);
+                baseFov = null;
+            }
+        }
     }
 
     public static class FullBrightModule extends Module {
@@ -1301,27 +1396,31 @@ public class VisualModClient implements ClientModInitializer {
             if (!isEnabled() || client.player == null || client.world == null) return;
 
             long window = client.getWindow().getHandle();
-            boolean isLeftDown = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
+            boolean isLeftDown = client.options.attackKey.isPressed() || GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_1) == GLFW.GLFW_PRESS;
 
-            if (isLeftDown && client.crosshairTarget instanceof BlockHitResult bHit) {
+            if (isLeftDown && client.crosshairTarget instanceof BlockHitResult bHit && bHit.getType() == HitResult.Type.BLOCK) {
                 BlockPos pos = bHit.getBlockPos();
                 BlockState state = client.world.getBlockState(pos);
                 if (state.isAir()) return;
 
                 int bestSlot = -1;
-                float bestSpeed = 1.0f;
+                float bestScore = -1.0f;
 
                 for (int i = 0; i < 9; i++) {
                     ItemStack stack = client.player.getInventory().getStack(i);
                     if (stack.isEmpty()) continue;
+
                     float speed = stack.getMiningSpeedMultiplier(state);
-                    if (speed > bestSpeed) {
-                        bestSpeed = speed;
+                    boolean suitable = stack.isSuitableFor(state);
+                    float score = speed + (suitable ? 1000.0f : 0.0f);
+
+                    if (score > bestScore) {
+                        bestScore = score;
                         bestSlot = i;
                     }
                 }
 
-                if (bestSlot != -1 && client.player.getInventory().selectedSlot != bestSlot) {
+                if (bestSlot != -1 && client.player.getInventory().selectedSlot != bestSlot && bestScore > 1.0f) {
                     client.player.getInventory().selectedSlot = bestSlot;
                 }
             }
@@ -1329,72 +1428,124 @@ public class VisualModClient implements ClientModInitializer {
     }
 
     public static class FreeCameraModule extends Module {
-        public final SliderSetting speed = new SliderSetting("Скорость полета", 1.2, 0.5, 4.0, 0.1, "x");
+        public final SliderSetting speed = new SliderSetting("Скорость полета", 1.5, 0.5, 5.0, 0.1, "x");
+        private OtherClientPlayerEntity dummyCamera = null;
         private double origX, origY, origZ;
         private float origYaw, origPitch;
-        private boolean active = false;
 
         public FreeCameraModule() {
-            super("FreeCamera", "Свободный полет камерой без перемещения хитбокса на сервере", Category.MISC);
+            super("FreeCamera", "Свободный полет камерой (спектратор) сквозь стены без движения тела", Category.MISC);
             registerSetting(speed);
         }
 
         @Override
         public void onEnable() {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player != null) {
-                origX = mc.player.getX();
-                origY = mc.player.getY();
-                origZ = mc.player.getZ();
-                origYaw = mc.player.getYaw();
-                origPitch = mc.player.getPitch();
-                mc.player.noClip = true;
-                active = true;
+            if (mc.player == null || mc.world == null) return;
+
+            origX = mc.player.getX();
+            origY = mc.player.getY();
+            origZ = mc.player.getZ();
+            origYaw = mc.player.getYaw();
+            origPitch = mc.player.getPitch();
+
+            try {
+                dummyCamera = new OtherClientPlayerEntity(mc.world, mc.player.getGameProfile());
+                dummyCamera.setId(-42069);
+                dummyCamera.copyPositionAndRotation(mc.player);
+                dummyCamera.setHeadYaw(mc.player.getHeadYaw());
+                dummyCamera.setBodyYaw(mc.player.getBodyYaw());
+                dummyCamera.noClip = true;
+                dummyCamera.setInvisible(true);
+
+                mc.world.addEntity(dummyCamera);
+                mc.setCameraEntity(dummyCamera);
+            } catch (Throwable t) {
+                t.printStackTrace();
             }
         }
 
         @Override
         public void onTick(MinecraftClient client) {
-            if (!isEnabled() || client.player == null || !active) return;
-            client.player.noClip = true;
+            if (!isEnabled() || client.player == null || client.world == null) return;
+
+            if (dummyCamera == null || dummyCamera.isRemoved()) {
+                onEnable();
+                if (dummyCamera == null) return;
+            }
+
+            // Передаем дельту поворота мыши с реального игрока на фрикам
+            float deltaYaw = client.player.getYaw() - origYaw;
+            float deltaPitch = client.player.getPitch() - origPitch;
+
+            dummyCamera.setYaw(dummyCamera.getYaw() + deltaYaw);
+            dummyCamera.setPitch(MathHelper.clamp(dummyCamera.getPitch() + deltaPitch, -90.0f, 90.0f));
+            dummyCamera.setHeadYaw(dummyCamera.getYaw());
+            dummyCamera.noClip = true;
+
+            // Фиксируем оригинальное тело на месте, чтобы оно не падало и не крутилось
             client.player.setVelocity(0, 0, 0);
+            client.player.setPosition(origX, origY, origZ);
+            client.player.setYaw(origYaw);
+            client.player.setPitch(origPitch);
+            client.player.setHeadYaw(origYaw);
+            client.player.setBodyYaw(origYaw);
 
-            double sp = speed.get() * 0.4;
-            double rad = Math.toRadians(client.player.getYaw());
-            double dx = 0, dy = 0, dz = 0;
+            // 3D полет в стиле спектатора сквозь стены
+            double sp = speed.get() * 0.45;
+            double forward = 0;
+            double strafe = 0;
+            double vertical = 0;
 
-            if (client.options.forwardKey.isPressed()) {
-                dx -= Math.sin(rad) * sp;
-                dz += Math.cos(rad) * sp;
-            }
-            if (client.options.backKey.isPressed()) {
-                dx += Math.sin(rad) * sp;
-                dz -= Math.cos(rad) * sp;
-            }
-            if (client.options.leftKey.isPressed()) {
-                dx += Math.cos(rad) * sp;
-                dz += Math.sin(rad) * sp;
-            }
-            if (client.options.rightKey.isPressed()) {
-                dx -= Math.cos(rad) * sp;
-                dz -= Math.sin(rad) * sp;
-            }
-            if (client.options.jumpKey.isPressed()) dy += sp;
-            if (client.options.sneakKey.isPressed()) dy -= sp;
+            if (client.options.forwardKey.isPressed()) forward += 1;
+            if (client.options.backKey.isPressed()) forward -= 1;
+            if (client.options.leftKey.isPressed()) strafe += 1;
+            if (client.options.rightKey.isPressed()) strafe -= 1;
+            if (client.options.jumpKey.isPressed()) vertical += 1;
+            if (client.options.sneakKey.isPressed()) vertical -= 1;
 
-            client.player.setPosition(client.player.getX() + dx, client.player.getY() + dy, client.player.getZ() + dz);
+            if (forward != 0 || strafe != 0 || vertical != 0) {
+                float yaw = dummyCamera.getYaw();
+                float pitch = dummyCamera.getPitch();
+
+                double radYaw = Math.toRadians(yaw);
+                double radPitch = Math.toRadians(pitch);
+
+                double cosYaw = Math.cos(radYaw);
+                double sinYaw = Math.sin(radYaw);
+                double cosPitch = Math.cos(radPitch);
+                double sinPitch = Math.sin(radPitch);
+
+                double forwardX = -sinYaw * cosPitch;
+                double forwardY = -sinPitch;
+                double forwardZ = cosYaw * cosPitch;
+
+                double strafeX = cosYaw;
+                double strafeZ = sinYaw;
+
+                double dx = (forward * forwardX + strafe * strafeX) * sp;
+                double dy = (forward * forwardY + vertical) * sp;
+                double dz = (forward * forwardZ + strafe * strafeZ) * sp;
+
+                dummyCamera.setPosition(dummyCamera.getX() + dx, dummyCamera.getY() + dy, dummyCamera.getZ() + dz);
+            }
+            dummyCamera.setVelocity(0, 0, 0);
         }
 
         @Override
         public void onDisable() {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player != null && active) {
-                mc.player.setPosition(origX, origY, origZ);
-                mc.player.setYaw(origYaw);
-                mc.player.setPitch(origPitch);
-                mc.player.noClip = false;
-                mc.player.setVelocity(0, 0, 0);
-                active = false;
+            if (mc != null) {
+                if (mc.player != null) {
+                    mc.setCameraEntity(mc.player);
+                    mc.player.setVelocity(0, 0, 0);
+                }
+                if (dummyCamera != null) {
+                    try {
+                        dummyCamera.discard();
+                    } catch (Throwable ignored) {}
+                    dummyCamera = null;
+                }
             }
         }
     }
@@ -1716,23 +1867,29 @@ public class VisualModClient implements ClientModInitializer {
         private void drawEntityPreviewSafely(DrawContext context, int centerX, int centerY, int size, float mouseX, float mouseY, LivingEntity entity) {
             if (entity == null) return;
             try {
-                for (Method m : InventoryScreen.class.getMethods()) {
-                    if (Modifier.isStatic(m.getModifiers()) && m.getName().equals("drawEntity")) {
-                        Class<?>[] p = m.getParameterTypes();
-                        if (p.length == 10 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[9])) {
-                            int x1 = centerX - size;
-                            int y1 = centerY - size * 2;
-                            int x2 = centerX + size;
-                            int y2 = centerY;
-                            m.invoke(null, context, x1, y1, x2, y2, size, 0.0625f, mouseX, mouseY, entity);
-                            return;
-                        } else if (p.length == 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[6])) {
-                            m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
-                            return;
+                // Прямой вызов InventoryScreen.drawEntity для Yarn 1.21+
+                InventoryScreen.drawEntity(context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
+                return;
+            } catch (Throwable fallback) {
+                try {
+                    // Универсальный перебор методов InventoryScreen на случай кастомных обфускаций
+                    for (Method m : InventoryScreen.class.getDeclaredMethods()) {
+                        if (Modifier.isStatic(m.getModifiers())) {
+                            Class<?>[] p = m.getParameterTypes();
+                            if (p.length >= 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[p.length - 1])) {
+                                m.setAccessible(true);
+                                if (p.length == 10) {
+                                    m.invoke(null, context, centerX - size, centerY - size * 2, centerX + size, centerY, size, 0.0625f, mouseX, mouseY, entity);
+                                    return;
+                                } else if (p.length == 7) {
+                                    m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
+                                    return;
+                                }
+                            }
                         }
                     }
-                }
-            } catch (Throwable ignored) {}
+                } catch (Throwable ignored) {}
+            }
             MinecraftClient mc = MinecraftClient.getInstance();
             drawStyledText(context, mc.textRenderer, "[3D Preview]", centerX - 30, centerY - size, 0xFF818CF8);
         }
