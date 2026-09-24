@@ -4,7 +4,6 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -88,56 +87,6 @@ public class VisualModClient implements ClientModInitializer {
             TargetHudModule th = moduleManager.getModule(TargetHudModule.class);
             if (th != null && th.isEnabled()) {
                 th.render(drawContext, mc);
-            }
-        });
-
-        // Прямая 3D отрисовка косметики и ChinaHat в мире без обязательного миксина
-        WorldRenderEvents.LAST.register(context -> {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.world == null || mc.player == null) return;
-
-            CosmeticsModule cosMod = moduleManager.getModule(CosmeticsModule.class);
-            ChinaHatModule hatMod = moduleManager.getModule(ChinaHatModule.class);
-
-            boolean hasCosmetics = cosMod != null && cosMod.isEnabled();
-            boolean hasHat = hatMod != null && hatMod.isEnabled();
-            if (!hasCosmetics && !hasHat) return;
-
-            MatrixStack matrices = context.matrixStack();
-            VertexConsumerProvider consumers = context.consumers();
-            if (matrices == null || consumers == null) return;
-
-            Camera camera = context.camera();
-            Vec3d camPos = camera.getPos();
-            float tickDelta = 1.0f;
-            try {
-                tickDelta = context.tickCounter().getTickDelta(true);
-            } catch (Throwable ignored) {}
-
-            for (AbstractClientPlayerEntity player : mc.world.getPlayers()) {
-                if (!player.isAlive()) continue;
-                if (player == mc.player && mc.options.getPerspective().isFirstPerson() && !(mc.currentScreen instanceof CosmeticsScreen)) {
-                    continue;
-                }
-
-                double px = MathHelper.lerp((double) tickDelta, player.lastRenderX, player.getX()) - camPos.x;
-                double py = MathHelper.lerp((double) tickDelta, player.lastRenderY, player.getY()) - camPos.y;
-                double pz = MathHelper.lerp((double) tickDelta, player.lastRenderZ, player.getZ()) - camPos.z;
-
-                matrices.push();
-                matrices.translate(px, py, pz);
-
-                float bodyYaw = MathHelper.lerpAngleDegrees(tickDelta, player.prevBodyYaw, player.bodyYaw);
-                matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180.0f - bodyYaw));
-
-                if (hasCosmetics) {
-                    CosmeticsRenderer.renderCosmetics(player, tickDelta, matrices, consumers, 0xF000F0);
-                }
-                if (hasHat) {
-                    CosmeticsRenderer.renderStandaloneChinaHat(player, tickDelta, matrices, consumers, hatMod);
-                }
-
-                matrices.pop();
             }
         });
 
