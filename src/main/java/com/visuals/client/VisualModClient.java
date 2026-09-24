@@ -1668,18 +1668,9 @@ public class VisualModClient implements ClientModInitializer {
                 int centerY = viewY + viewH - 24;
                 int size = Math.min(viewH / 3, 75);
 
-                float mouseDeltaX = (float) (centerX - mouseX);
-                float mouseDeltaY = (float) (centerY - 55 - mouseY);
-
-                try {
-                    InventoryScreen.drawEntity(context, centerX, centerY, size, -playerRotation, mouseDeltaY * 0.1f, mc.player);
-                } catch (Throwable ignored) {
-                    try {
-                        InventoryScreen.drawEntity(context, centerX - size, centerY - size * 2, centerX + size, centerY, size, -playerRotation, mouseDeltaX * 0.05f, mouseDeltaY * 0.05f, mc.player);
-                    } catch (Throwable fallback) {
-                        drawStyledText(context, mc.textRenderer, "[3D Preview Active]", centerX - 40, centerY - 40, 0xFF818CF8);
-                    }
-                }
+                float targetRotX = (float) centerX - playerRotation;
+                float targetRotY = (float) (centerY - 55 - mouseY);
+                drawEntityPreviewSafely(context, centerX, centerY, size, targetRotX, targetRotY, mc.player);
             }
             drawStyledText(context, mc.textRenderer, "§8⟳ Зажмите ЛКМ на модели для вращения", viewX + (viewW - 170) / 2, viewY + viewH - 12, 0xFF64748B);
 
@@ -1720,6 +1711,30 @@ public class VisualModClient implements ClientModInitializer {
             drawStyledText(context, mc.textRenderer, "← В ClickGUI", backBtnX + 16, backBtnY + 5, 0xFFFFFFFF);
 
             super.render(context, mouseX, mouseY, delta);
+        }
+
+        private void drawEntityPreviewSafely(DrawContext context, int centerX, int centerY, int size, float mouseX, float mouseY, LivingEntity entity) {
+            if (entity == null) return;
+            try {
+                for (Method m : InventoryScreen.class.getMethods()) {
+                    if (Modifier.isStatic(m.getModifiers()) && m.getName().equals("drawEntity")) {
+                        Class<?>[] p = m.getParameterTypes();
+                        if (p.length == 10 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[9])) {
+                            int x1 = centerX - size;
+                            int y1 = centerY - size * 2;
+                            int x2 = centerX + size;
+                            int y2 = centerY;
+                            m.invoke(null, context, x1, y1, x2, y2, size, 0.0625f, mouseX, mouseY, entity);
+                            return;
+                        } else if (p.length == 7 && p[0] == DrawContext.class && LivingEntity.class.isAssignableFrom(p[6])) {
+                            m.invoke(null, context, centerX, centerY, size, -playerRotation, mouseY * 0.1f, entity);
+                            return;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            MinecraftClient mc = MinecraftClient.getInstance();
+            drawStyledText(context, mc.textRenderer, "[3D Preview]", centerX - 30, centerY - size, 0xFF818CF8);
         }
 
         private void drawSettingControl(DrawContext context, Setting<?> s, int x, int y, int w, int mouseX, int mouseY) {
